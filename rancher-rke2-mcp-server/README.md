@@ -1,6 +1,6 @@
-# Rancher/RKE2 MCP Server 0.5.0
+# Rancher/RKE2 MCP Server 0.5.1
 
-## 0.5.0 VM execution
+## 0.5.1 VM execution
 
 `start_run` now executes a VM-only plan after the existing digest, preflight,
 approval-text, and idempotency checks. It connects to `execution.control_host` with

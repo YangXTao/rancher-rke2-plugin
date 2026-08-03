@@ -15,6 +15,7 @@ terraform_version=${8:?terraform version is required}
 [[ -f "$run_dir/.runtime.env" ]] || { echo "RUNTIME_ENV_MISSING" >&2; exit 2; }
 source "$run_dir/.runtime.env"
 chmod 0600 "$run_dir/.runtime.env"
+trap 'rm -f "$run_dir/.runtime.env"' EXIT
 
 [[ -x "$run_dir/run-logged.sh" ]] || chmod 0755 "$run_dir/run-logged.sh"
 [[ -x "$run_dir/check-ip-conflicts.py" ]] || chmod 0755 "$run_dir/check-ip-conflicts.py"
@@ -56,5 +57,4 @@ terraform_env="set -a; source '$run_dir/.runtime.env'; set +a; export TF_PLUGIN_
 docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/terraform-init.log" bash -lc "cd '$run_dir' && $terraform_env"
 docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/terraform-apply.log" bash -lc "cd '$run_dir' && $terraform_env && terraform apply -auto-approve"
 docker exec -i "$container_name" bash -lc "cd '$run_dir' && set -a && source '$run_dir/.runtime.env' && set +a && terraform output -json > '$run_dir/terraform-outputs.json'"
-rm -f "$run_dir/.runtime.env"
 echo "VM_EXECUTION_SUCCEEDED run_dir=$run_dir"
