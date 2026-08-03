@@ -35,7 +35,13 @@ def main() -> int:
 
     operation = tool_name.rsplit("__", 1)[-1]
     required = {
-        "start_run": ["plan_id", "config_digest", "approval_text", "idempotency_key"],
+        "start_run": [
+            "plan_id",
+            "config_digest",
+            "preflight_id",
+            "approval_text",
+            "idempotency_key",
+        ],
         "resume_run": ["run_id", "idempotency_key"],
         "retry_component": ["run_id", "component", "idempotency_key"],
         "cancel_run": ["run_id", "approval_text", "idempotency_key"],

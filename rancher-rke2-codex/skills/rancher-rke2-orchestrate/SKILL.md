@@ -33,9 +33,10 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
    then validate and build a fresh plan before running preflight again.
 10. If `start_run` is unavailable, stop after returning the plan and preflight result
    and state that this server version is preflight-only. Do not ask for execution approval.
-11. If `start_run` is available, require a `PASSED` preflight for the same unexpired
-   plan, then ask for one explicit approval only after the plan is
-   stable. Do not treat earlier general consent as plan approval.
+11. In server 0.4.0, `start_run` accepts only a VM-only plan. It validates a matching
+   current `PASSED` preflight, exact plan approval text, and stable idempotency key,
+   then records a durable `BLOCKED` run because no execution backend is configured.
+   Do not describe this result as VM creation or infrastructure execution.
 12. Call `start_run` with `plan_id`, `config_digest`, `preflight_id`, the exact `approval_text`, and
    a stable `idempotency_key`.
 13. Track progress only through available tools such as `get_run` and

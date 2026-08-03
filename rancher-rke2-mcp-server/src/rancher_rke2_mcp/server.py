@@ -31,12 +31,13 @@ def create_server(
     )
     server = MCPServer(
         name="rancher-rke2",
-        title="Rancher/RKE2 Read-Only Planner",
-        description="Validates YAML, creates non-executable plans, and performs non-mutating preflight checks.",
+        title="Rancher/RKE2 Planner and Approval Gate",
+        description="Validates YAML, creates plans, performs non-mutating preflight checks, and persists approval-gated run state.",
         instructions=(
-            "This server is non-mutating. Preflight resolves only Secret availability "
-            "and TCP reachability; it does not authenticate, execute, retry, cancel, "
-            "or destroy infrastructure."
+            "Preflight resolves only Secret availability and TCP reachability. "
+            "start_run accepts only a VM-only plan with an exact approval and matching "
+            "PASSED preflight. Version 0.4.0 has no execution backend and never "
+            "authenticates or changes infrastructure."
         ),
         version=SERVER_VERSION,
     )
@@ -78,6 +79,35 @@ def create_server(
     def get_preflight(preflight_id: str) -> dict[str, Any]:
         """Read a previously generated non-mutating preflight result."""
         return service.get_preflight(preflight_id)
+
+    @server.tool()
+    def start_run(
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+        approval_text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Persist a VM-only approval-gated run request; 0.4.0 never executes infrastructure."""
+        return service.start_run(
+            plan_id=plan_id,
+            config_digest=config_digest,
+            preflight_id=preflight_id,
+            approval_text=approval_text,
+            idempotency_key=idempotency_key,
+        )
+
+    @server.tool()
+    def get_run(run_id: str) -> dict[str, Any]:
+        """Read a persisted approval-gated run."""
+        return service.get_run(run_id)
+
+    @server.tool()
+    def get_run_events(
+        run_id: str, after_cursor: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        """Read structured, redacted run events incrementally."""
+        return service.get_run_events(run_id, after_cursor, limit)
 
     return server
 

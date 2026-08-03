@@ -85,6 +85,9 @@ class ReadOnlyPlanningService:
                 "preflight_network_checks": True,
                 "preflight_authentication_attempted": False,
                 "preflight_mutates_infrastructure": False,
+                "execution_scope": ["vm"],
+                "execution_backend": "not-configured",
+                "execution_backend_configured": False,
                 "transport_security_required": True,
             },
         )
@@ -278,6 +281,229 @@ class ReadOnlyPlanningService:
             ok=state == "PASSED", state=state, data={"preflight": preflight}
         )
 
+    def start_run(
+        self,
+        *,
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+        approval_text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Persist an approval-gated VM execution request without a backend action.
+
+        Version 0.4.0 deliberately owns the approval and durable-run state machine
+        before any remote executor is connected. The returned BLOCKED state is
+        explicit: no SSH, Terraform, vSphere API, or other infrastructure action is
+        attempted by this release.
+        """
+        request_fingerprint = self._request_fingerprint(
+            plan_id, config_digest, preflight_id, approval_text
+        )
+        existing = self.store.get_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing["request_fingerprint"] != request_fingerprint:
+                return _envelope(
+                    ok=False,
+                    state="IDEMPOTENCY_CONFLICT",
+                    errors=[
+                        {
+                            "path": "idempotency_key",
+                            "message": "This key was already used for a different request.",
+                        }
+                    ],
+                )
+            run = self.store.get_run(existing["run_id"])
+            if run is None:
+                return _envelope(
+                    ok=False,
+                    state="INTERNAL_ERROR",
+                    errors=[
+                        {
+                            "path": "idempotency_key",
+                            "message": "The persisted idempotent run is unavailable.",
+                        }
+                    ],
+                )
+            return _envelope(
+                ok=True,
+                state=run["state"],
+                data={"run": run, "idempotent_replay": True},
+            )
+
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        if plan["config_digest"] != config_digest:
+            return _envelope(
+                ok=False,
+                state="CONFIG_MISMATCH",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The supplied digest does not match the plan.",
+                    }
+                ],
+            )
+        if datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00")) <= _now():
+            return _envelope(
+                ok=False,
+                state="EXPIRED",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "Plan has expired; validate, plan, and preflight again.",
+                    }
+                ],
+            )
+        if plan["target_components"] != ["vm"]:
+            return _envelope(
+                ok=False,
+                state="UNSUPPORTED_SCOPE",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "0.4.0 accepts only a VM-only plan for start_run.",
+                    }
+                ],
+            )
+        expected_approval = plan["approval_text"]
+        if approval_text != expected_approval:
+            return _envelope(
+                ok=False,
+                state="APPROVAL_REQUIRED",
+                errors=[
+                    {
+                        "path": "approval_text",
+                        "message": "Approval text must exactly match the plan approval text.",
+                    }
+                ],
+            )
+
+        preflight = self.store.get_preflight(preflight_id)
+        if preflight is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {"path": "preflight_id", "message": "Unknown preflight ID."}
+                ],
+            )
+        if preflight["plan_id"] != plan_id or preflight["config_digest"] != config_digest:
+            return _envelope(
+                ok=False,
+                state="PREFLIGHT_MISMATCH",
+                errors=[
+                    {
+                        "path": "preflight_id",
+                        "message": "Preflight does not belong to the selected plan and configuration.",
+                    }
+                ],
+            )
+        if preflight["state"] != "PASSED" or datetime.fromisoformat(
+            preflight["expires_at"].replace("Z", "+00:00")
+        ) <= _now():
+            return _envelope(
+                ok=False,
+                state="PREFLIGHT_REQUIRED",
+                errors=[
+                    {
+                        "path": "preflight_id",
+                        "message": "A current PASSED preflight is required before starting a run.",
+                    }
+                ],
+            )
+
+        created_at = _iso(_now())
+        run_id = "run-" + uuid4().hex
+        run = {
+            "run_id": run_id,
+            "state": "BLOCKED",
+            "plan_id": plan_id,
+            "config_digest": config_digest,
+            "preflight_id": preflight_id,
+            "target_components": ["vm"],
+            "created_at": created_at,
+            "updated_at": created_at,
+            "execution_backend": "not-configured",
+            "component_states": [
+                {
+                    "component": "vm",
+                    "state": "BLOCKED",
+                    "checkpoint": "awaiting_execution_backend",
+                    "message": "No server-side execution backend is configured in 0.4.0.",
+                }
+            ],
+        }
+        self.store.save_run(run)
+        self.store.save_idempotency_key(idempotency_key, request_fingerprint, run_id)
+        self.store.append_run_event(
+            run_id,
+            created_at,
+            {
+                "type": "RUN_BLOCKED",
+                "component": "vm",
+                "message": "Approval and preflight were accepted; no execution backend is configured.",
+            },
+        )
+        return _envelope(
+            ok=True,
+            state="BLOCKED",
+            data={"run": run, "idempotent_replay": False},
+            warnings=[
+                "0.4.0 records approval-gated run state only; it does not execute SSH, Terraform, Ansible, or vSphere operations."
+            ],
+        )
+
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "run_id", "message": "Unknown run ID."}],
+            )
+        return _envelope(ok=run["state"] == "SUCCEEDED", state=run["state"], data={"run": run})
+
+    def get_run_events(
+        self, run_id: str, after_cursor: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        if self.store.get_run(run_id) is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "run_id", "message": "Unknown run ID."}],
+            )
+        try:
+            selected_limit = max(1, min(int(limit), 100))
+            if after_cursor is not None:
+                int(after_cursor)
+        except (TypeError, ValueError):
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "after_cursor",
+                        "message": "after_cursor must be a numeric event cursor.",
+                    }
+                ],
+            )
+        events = self.store.get_run_events(run_id, after_cursor, selected_limit)
+        return _envelope(
+            ok=True,
+            state="EVENTS_AVAILABLE",
+            data={
+                "run_id": run_id,
+                "events": events,
+                "next_cursor": events[-1]["cursor"] if events else after_cursor,
+            },
+        )
+
     @staticmethod
     def _normalize_components(target_components: list[str]) -> list[str]:
         if not target_components:
@@ -303,6 +529,12 @@ class ReadOnlyPlanningService:
             separators=(",", ":"),
         ).encode("utf-8")
         return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+    @staticmethod
+    def _request_fingerprint(*values: str) -> str:
+        return "sha256:" + hashlib.sha256(
+            "\x00".join(values).encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def _component_plan(

@@ -20,9 +20,10 @@ apply only when their named tools are available.
 2. Build a plan with `target_components: ["vm"]`.
 3. Present the server's redacted VM inventory, IP-conflict findings, Provider/cache
    requirements, and planned creates or updates.
-4. Obtain the exact plan approval, then call `start_run` with a stable idempotency
-   key. Use `resume_run` only when the user identifies an existing `run_id`.
-5. Verify with `get_run`; do not infer success from Terraform text alone.
+4. In server 0.4.0, obtain the exact plan approval, then call `start_run` with the
+   matching `preflight_id` and a stable idempotency key. It records an approval-gated
+   run but returns `BLOCKED` until a future server-side executor is implemented.
+5. Verify with `get_run`; never infer VM creation from an approval or a blocked run.
 
 Planning, validation, inventory, and status requests are read-only.
 

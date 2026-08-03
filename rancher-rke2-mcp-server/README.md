@@ -1,6 +1,6 @@
-# Rancher/RKE2 MCP Server 0.3.1
+# Rancher/RKE2 MCP Server 0.4.0
 
-## 0.3.1 non-mutating preflight
+## 0.4.0 approval-gated run state
 
 `preflight_plan(plan_id)` verifies that referenced Docker Secret files are mounted
 and non-empty, then opens short-lived TCP connections to the control host, vCenter,
@@ -10,8 +10,14 @@ For plans that do not include `vm`, target node SSH TCP checks are performed. It
 SSH commands, call vSphere APIs, or change any infrastructure. Results are saved
 without Secret values and can be read with `get_preflight(preflight_id)`.
 
+`start_run` is now available only for a VM-only plan. The server requires the
+matching configuration digest, an unexpired `PASSED` preflight, the exact plan
+approval text, and an idempotency key. It then persists a `BLOCKED` run with
+structured events. Version 0.4.0 intentionally has **no execution backend**: it
+does not SSH, call Terraform, authenticate to vSphere, or change infrastructure.
+
 The Compose service now mounts `proxy_password` and `registry_password` too. Create
-both files before starting the 0.3.1 container; use an empty file only when that
+both files before starting the 0.4.0 container; use an empty file only when that
 Secret is not referenced by the configuration.
 
 这是一个远程 Docker 部署的无破坏性 MCP Server，用于校验 Rancher/RKE2

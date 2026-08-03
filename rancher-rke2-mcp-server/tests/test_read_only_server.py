@@ -13,7 +13,7 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
-from rancher_rke2_mcp.constants import READ_ONLY_TOOLS
+from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
@@ -151,17 +151,19 @@ def test_legacy_sqlite_row_with_plaintext_secret_is_not_returned(
     assert store.get_config("sha256:legacy") is None
 
 
-def test_mcp_client_discovers_exactly_seven_non_mutating_tools(tmp_path: Path) -> None:
+def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) -> None:
     async def scenario() -> None:
         server = create_server(tmp_path / "state.db")
         async with Client(server) as client:
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
-            assert set(names) == set(READ_ONLY_TOOLS)
-            assert len(names) == 7
+            assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
+            assert len(names) == 10
             capability = await client.call_tool("get_capabilities", {})
             assert capability.structured_content["ok"] is True
-            assert capability.structured_content["data"]["mutation_tools"] == []
+            assert capability.structured_content["data"]["mutation_tools"] == [
+                "start_run"
+            ]
             assert (
                 capability.structured_content["data"][
                     "plaintext_credentials_compatible"
@@ -172,6 +174,65 @@ def test_mcp_client_discovers_exactly_seven_non_mutating_tools(tmp_path: Path) -
             assert capability.structured_content["data"]["preflight_mutates_infrastructure"] is False
 
     asyncio.run(scenario())
+
+
+def test_start_run_requires_current_preflight_and_is_idempotent(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    validation = service.validate_config(EXAMPLE)
+    digest = validation["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    first = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="vm-run-001",
+    )
+    assert first["ok"] is True
+    assert first["state"] == "BLOCKED"
+    run_id = first["data"]["run"]["run_id"]
+
+    replay = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="vm-run-001",
+    )
+    assert replay["data"]["idempotent_replay"] is True
+    assert replay["data"]["run"]["run_id"] == run_id
+
+    events = service.get_run_events(run_id)
+    assert events["state"] == "EVENTS_AVAILABLE"
+    assert events["data"]["events"][0]["type"] == "RUN_BLOCKED"
+
+
+def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    validation = service.validate_config(EXAMPLE)
+    digest = validation["data"]["config_digest"]
+    plan = service.build_plan(digest, ["all"])["data"]["plan"]
+
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="all-run-001",
+    )
+    assert result["ok"] is False
+    assert result["state"] == "UNSUPPORTED_SCOPE"
 
 
 def test_preflight_checks_secret_availability_and_tcp_without_exposing_values(
@@ -341,7 +402,9 @@ def test_authenticated_streamable_http_end_to_end(tmp_path: Path) -> None:
                 transport = streamable_http_client(url, http_client=authorized)
                 async with Client(transport, cache=None) as client:
                     tools = await client.list_tools()
-                    assert {item.name for item in tools.tools} == set(READ_ONLY_TOOLS)
+                    assert {item.name for item in tools.tools} == set(
+                        READ_ONLY_TOOLS
+                    ) | set(MUTATION_TOOLS)
 
                     validation_result = await client.call_tool(
                         "validate_config",

@@ -1,13 +1,19 @@
-# Rancher/RKE2 MCP Server Contract 0.3.1
+# Rancher/RKE2 MCP Server Contract 0.4.0
 
 ## Implemented preflight boundary
 
-Server 0.3.1 provides `preflight_plan` and `get_preflight`. If a preflight plan
+Server 0.4.0 provides `preflight_plan`, `get_preflight`, `start_run`, `get_run`,
+and `get_run_events`. If a preflight plan
 includes `vm`, node SSH checks are skipped because those nodes are intended to be
 created; vCenter and registry checks remain required.
 Preflight can resolve mounted Secret availability and test TCP reachability only.
 It does not authenticate against SSH, vCenter, registry, or proxy services, and it
 does not make any infrastructure change.
+
+`start_run` is a server-side mutation gate: it accepts only a VM-only plan, exact
+plan approval text, matching digest, and a current `PASSED` preflight. It records
+durable state with idempotency protection. In 0.4.0 the result is intentionally
+`BLOCKED`, because no infrastructure execution backend has been introduced.
 
 ## 服务职责
 
@@ -53,7 +59,7 @@ Skill只决定调用顺序和用户解释，不得绕过MCP Server直接执行�
 
 ## 当前实现边界
 
-Server 0.3.1已实现：
+Server 0.4.0已实现：
 
 ```text
 get_capabilities
@@ -63,6 +69,9 @@ build_plan
 get_plan
 preflight_plan
 get_preflight
+start_run
+get_run
+get_run_events
 ```
 
 这些工具不会探测或修改vSphere、Linux、Kubernetes、Rancher或Harbor。
