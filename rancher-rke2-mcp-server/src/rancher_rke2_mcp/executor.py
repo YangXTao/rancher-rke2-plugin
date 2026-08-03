@@ -140,6 +140,12 @@ class VmExecutor:
                 self._runtime_env(config),
                 mode=0o600,
             )
+            self._put_text(
+                sftp,
+                f"{run_dir}/.dependency.env",
+                self._dependency_env(config),
+                mode=0o600,
+            )
         finally:
             sftp.close()
 
@@ -243,7 +249,16 @@ class VmExecutor:
             "TF_VAR_vsphere_user": str(config["vsphere"]["username"]),
             "TF_VAR_vsphere_password": resolver.resolve(config["vsphere"]["password_ref"]),
         }
+        return "".join(f"export {key}={shlex.quote(value)}\n" for key, value in values.items())
+
+    def _dependency_env(self, config: dict[str, Any]) -> str:
+        """Return proxy variables for package/archive downloads only.
+
+        Terraform talks directly to vCenter and must never inherit this file.
+        """
+        resolver = DockerSecretResolver(self.secret_root)
         downloads = config["downloads"]
+        values: dict[str, str] = {}
         if downloads.get("proxy_username"):
             parsed = urlsplit(str(downloads["proxy_url"]))
             password = quote(resolver.resolve(downloads["proxy_password_ref"]), safe="")

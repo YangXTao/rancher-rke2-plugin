@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.5.3
+# Rancher/RKE2 MCP Server 0.5.4
+
+## 0.5.4 vCenter connection proxy isolation
+
+The VM executor now writes two separate protected environment files.  The
+dependency installer receives proxy variables only for `apt-get` and Terraform
+archive downloads; Terraform itself receives only the vSphere credentials and
+explicitly clears proxy environment variables before contacting vCenter.  This
+prevents a configured download proxy from intercepting the vSphere SOAP client.
 
 ## 0.5.3 VM Terraform workspace fix
 

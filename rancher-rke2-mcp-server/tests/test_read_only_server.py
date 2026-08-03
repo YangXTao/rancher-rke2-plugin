@@ -372,6 +372,19 @@ def test_vm_dependency_installer_handles_pristine_tzdata_with_readonly_localtime
     assert "mv -f \"$backup\" \"$postinst\"" in installer
 
 
+def test_vm_proxy_environment_is_limited_to_dependency_downloads() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    installer = (assets / "install-control-dependencies.sh").read_text(encoding="utf-8")
+    executor_source = (PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py").read_text(encoding="utf-8")
+
+    assert 'source "$run_dir/.dependency.env"' in installer
+    assert "DEPENDENCY_ENV_MISSING" in runner
+    assert "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy" in runner
+    assert "def _dependency_env" in executor_source
+    assert "Terraform talks directly to vCenter" in executor_source
+
+
 def test_vm_terraform_assets_are_uploaded_to_the_execution_directory() -> None:
     assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
     executor = VmExecutor(secret_root="/run/secrets", assets_root=assets)

@@ -6,9 +6,9 @@ mode=${2:?download mode is required}
 terraform_version=${3:?terraform version is required}
 
 [[ "$mode" == online || "$mode" == offline ]] || { echo "INVALID_DOWNLOAD_MODE" >&2; exit 2; }
-[[ -f "$run_dir/.runtime.env" ]] || { echo "RUNTIME_ENV_MISSING" >&2; exit 2; }
+[[ -f "$run_dir/.dependency.env" ]] || { echo "DEPENDENCY_ENV_MISSING" >&2; exit 2; }
 set -a
-source "$run_dir/.runtime.env"
+source "$run_dir/.dependency.env"
 set +a
 export DEBIAN_FRONTEND=noninteractive
 

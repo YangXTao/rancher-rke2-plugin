@@ -46,7 +46,7 @@ def create_server(
         instructions=(
             "Preflight resolves only Secret availability and TCP reachability. "
             "start_run accepts only a VM-only plan with an exact approval and matching "
-            "PASSED preflight. Version 0.5.3 uses strict known-host SSH verification "
+            "PASSED preflight. Version 0.5.4 uses strict known-host SSH verification "
             "and executes Terraform only inside the declared control container."
         ),
         version=SERVER_VERSION,
