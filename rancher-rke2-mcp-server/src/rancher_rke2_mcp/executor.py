@@ -105,6 +105,7 @@ class VmExecutor:
                     str(config["run"]["workspace"]),
                     str(config["downloads"]["mode"]),
                     str(config["versions"]["terraform"]),
+                    str(config["versions"]["vsphere_provider"]),
                 )
             )
             _, stdout, stderr = client.exec_command(command, timeout=1800)

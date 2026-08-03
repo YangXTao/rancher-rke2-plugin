@@ -368,7 +368,7 @@ class ReadOnlyPlanningService:
                 errors=[
                     {
                         "path": "plan_id",
-                        "message": "0.5.4 accepts only a VM-only plan for start_run.",
+                        "message": "0.5.5 accepts only a VM-only plan for start_run.",
                     }
                 ],
             )

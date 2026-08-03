@@ -385,6 +385,21 @@ def test_vm_proxy_environment_is_limited_to_dependency_downloads() -> None:
     assert "Terraform talks directly to vCenter" in executor_source
 
 
+def test_vm_provider_cache_uses_persistent_filesystem_mirror() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    cache_script = (assets / "prepare-terraform-provider-cache.sh").read_text(encoding="utf-8")
+
+    assert 'provider-cache.log' in runner
+    assert 'prepare-terraform-provider-cache.sh' in runner
+    assert 'TF_CLI_CONFIG_FILE=/software/terraform/provider-cache-config/vmware-vsphere.tfrc' in runner
+    assert 'provider-downloads/registry.terraform.io/vmware/vsphere/$version' in cache_script
+    assert 'providers/registry.terraform.io/vmware/vsphere/$version/$platform' in cache_script
+    assert 'OFFLINE_PROVIDER_FILE_MISSING' in cache_script
+    assert 'PROVIDER_CHECKSUM_MISMATCH' in cache_script
+    assert 'filesystem_mirror' in cache_script
+
+
 def test_vm_terraform_assets_are_uploaded_to_the_execution_directory() -> None:
     assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
     executor = VmExecutor(secret_root="/run/secrets", assets_root=assets)

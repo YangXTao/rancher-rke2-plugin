@@ -1,4 +1,14 @@
-# Rancher/RKE2 MCP Server 0.5.4
+# Rancher/RKE2 MCP Server 0.5.5
+
+## 0.5.5 persistent vSphere Provider mirror
+
+The VM runner now follows the validated VM Skill provider-cache workflow. It
+downloads the exact configured `vmware/vsphere` archive and SHA256SUMS through
+the download proxy only, verifies them, and persists the archive, checksum,
+unpacked filesystem mirror, manifest, plugin cache, and Terraform CLI config under
+`/software/terraform`. Terraform then uses that filesystem mirror with proxy
+variables cleared. Offline mode requires the same archive and SHA256SUMS paths to
+be pre-positioned and never accesses the network.
 
 ## 0.5.4 vCenter connection proxy isolation
 
