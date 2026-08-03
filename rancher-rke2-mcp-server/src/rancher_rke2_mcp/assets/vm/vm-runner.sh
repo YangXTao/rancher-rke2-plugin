@@ -20,6 +20,7 @@ trap 'rm -f "$run_dir/.runtime.env"' EXIT
 [[ -x "$run_dir/run-logged.sh" ]] || chmod 0755 "$run_dir/run-logged.sh"
 [[ -x "$run_dir/check-ip-conflicts.py" ]] || chmod 0755 "$run_dir/check-ip-conflicts.py"
 [[ -x "$run_dir/install-control-dependencies.sh" ]] || chmod 0755 "$run_dir/install-control-dependencies.sh"
+[[ -x "$run_dir/verify-vm-state.py" ]] || chmod 0755 "$run_dir/verify-vm-state.py"
 command -v docker >/dev/null 2>&1 || { echo "CONTROL_DOCKER_UNAVAILABLE" >&2; exit 3; }
 
 if docker container inspect "$container_name" >/dev/null 2>&1; then
@@ -54,8 +55,11 @@ docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/install
 ip_args=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["ips"]))' "$run_dir/vm-input.json")
 docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/ip-conflicts.log" bash -lc "python3 '$run_dir/check-ip-conflicts.py' $ip_args"
 
-terraform_env="set -a; source '$run_dir/.runtime.env'; set +a; export TF_PLUGIN_CACHE_DIR=/software/terraform/plugin-cache; mkdir -p \"\$TF_PLUGIN_CACHE_DIR\"; terraform init"
-docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/terraform-init.log" bash -lc "cd '$run_dir' && $terraform_env"
+terraform_env="set -a; source '$run_dir/.runtime.env'; set +a; export TF_PLUGIN_CACHE_DIR=/software/terraform/plugin-cache; mkdir -p \"\$TF_PLUGIN_CACHE_DIR\""
+docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/terraform-init.log" bash -lc "cd '$run_dir' && $terraform_env && terraform init"
 docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/terraform-apply.log" bash -lc "cd '$run_dir' && $terraform_env && terraform apply -auto-approve"
+expected_vm_count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["ips"]))' "$run_dir/vm-input.json")
+docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/terraform-verify.log" \
+  bash -lc "cd '$run_dir' && terraform state list | python3 '$run_dir/verify-vm-state.py' --expected '$expected_vm_count'"
 docker exec -i "$container_name" bash -lc "cd '$run_dir' && set -a && source '$run_dir/.runtime.env' && set +a && terraform output -json > '$run_dir/terraform-outputs.json'"
 echo "VM_EXECUTION_SUCCEEDED run_dir=$run_dir"

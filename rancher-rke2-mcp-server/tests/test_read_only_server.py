@@ -14,7 +14,7 @@ from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
 from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
-from rancher_rke2_mcp.executor import ExecutionResult
+from rancher_rke2_mcp.executor import ExecutionResult, VmExecutor
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
@@ -370,6 +370,26 @@ def test_vm_dependency_installer_handles_pristine_tzdata_with_readonly_localtime
     assert "dpkg --configure -a" in installer
     assert "apt-mark hold tzdata" in installer
     assert "mv -f \"$backup\" \"$postinst\"" in installer
+
+
+def test_vm_terraform_assets_are_uploaded_to_the_execution_directory() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    executor = VmExecutor(secret_root="/run/secrets", assets_root=assets)
+
+    assert executor._asset_destination(assets / "terraform" / "vm.tf", "/run/vm") == "/run/vm/vm.tf"
+    assert executor._asset_destination(assets / "terraform" / "data.tf", "/run/vm") == "/run/vm/data.tf"
+    assert executor._asset_destination(assets / "run-logged.sh", "/run/vm") == "/run/vm/run-logged.sh"
+
+
+def test_vm_runner_requires_expected_vm_resources_in_terraform_state() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    verifier = (assets / "verify-vm-state.py").read_text(encoding="utf-8")
+
+    assert "terraform state list" in runner
+    assert "verify-vm-state.py" in runner
+    assert "VM_STATE_COUNT_MISMATCH" in verifier
+    assert "vsphere_virtual_machine.vm[" in verifier
 
 
 def test_successful_executor_persists_vm_result(tmp_path: Path) -> None:

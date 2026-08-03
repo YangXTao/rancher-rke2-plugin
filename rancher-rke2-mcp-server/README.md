@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.5.2
+# Rancher/RKE2 MCP Server 0.5.3
+
+## 0.5.3 VM Terraform workspace fix
+
+Terraform source assets are now uploaded directly into the VM run directory where
+Terraform executes; nested asset directories are not Terraform module directories.
+After `terraform apply`, the runner verifies that state contains exactly the intended
+number of `vsphere_virtual_machine.vm` instances. An empty apply is therefore a
+failed VM run, not a successful deployment.
 
 ## 0.5.2 control-container package fix
 

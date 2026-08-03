@@ -126,7 +126,7 @@ class VmExecutor:
             self._mkdirs(sftp, run_dir)
             for source in self.assets_root.rglob("*"):
                 if source.is_file():
-                    remote = f"{run_dir}/{source.relative_to(self.assets_root).as_posix()}"
+                    remote = self._asset_destination(source, run_dir)
                     self._mkdirs(sftp, remote.rsplit("/", 1)[0])
                     sftp.put(str(source), remote)
                     if source.suffix in {".sh", ".py"}:
@@ -142,6 +142,21 @@ class VmExecutor:
             )
         finally:
             sftp.close()
+
+    def _asset_destination(self, source: Path, run_dir: str) -> str:
+        """Place Terraform source files in the directory Terraform executes in.
+
+        Component assets may be packaged below ``assets/vm/terraform`` for source
+        organization. Terraform intentionally does not recurse into child
+        directories, so those files must be flattened into the component run
+        directory before ``terraform init`` and ``terraform apply``.
+        """
+        relative = source.relative_to(self.assets_root)
+        if relative.parts[0] == "terraform":
+            if len(relative.parts) != 2 or source.suffix != ".tf":
+                raise ValueError(f"unsupported Terraform asset path: {relative}")
+            return f"{run_dir}/{source.name}"
+        return f"{run_dir}/{relative.as_posix()}"
 
     @staticmethod
     def _mkdirs(sftp: paramiko.SFTPClient, path: str) -> None:
