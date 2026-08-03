@@ -19,5 +19,5 @@ reference them. A referenced empty file is reported as a failed preflight check.
 
 `control_host_known_hosts` is not a credential. It must contain the SSH public host
 key entry for `execution.control_host.address` (use `[address]:port` form for a
-non-22 port). Version 0.5.1 refuses to execute a VM plan without this file and does
+non-22 port). Version 0.5.2 refuses to execute a VM plan without this file and does
 not use trust-on-first-use host-key acceptance.

@@ -1,4 +1,13 @@
-# Rancher/RKE2 MCP Server 0.5.1
+# Rancher/RKE2 MCP Server 0.5.2
+
+## 0.5.2 control-container package fix
+
+The VM control container continues to bind-mount `/etc/localtime` read-only. On a
+pristine Ubuntu image, installing Python can install `tzdata` for the first time;
+its post-install action attempts to replace that mount and fails. The dependency
+installer now completes only that interrupted package configuration with the
+vendor post-install action temporarily suppressed, restores the action immediately,
+then holds `tzdata`. Terraform is started only after this succeeds.
 
 ## 0.5.1 VM execution
 

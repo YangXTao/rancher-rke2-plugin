@@ -19,6 +19,7 @@ trap 'rm -f "$run_dir/.runtime.env"' EXIT
 
 [[ -x "$run_dir/run-logged.sh" ]] || chmod 0755 "$run_dir/run-logged.sh"
 [[ -x "$run_dir/check-ip-conflicts.py" ]] || chmod 0755 "$run_dir/check-ip-conflicts.py"
+[[ -x "$run_dir/install-control-dependencies.sh" ]] || chmod 0755 "$run_dir/install-control-dependencies.sh"
 command -v docker >/dev/null 2>&1 || { echo "CONTROL_DOCKER_UNAVAILABLE" >&2; exit 3; }
 
 if docker container inspect "$container_name" >/dev/null 2>&1; then
@@ -47,8 +48,8 @@ fi
 test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = true
 docker exec -i "$container_name" bash -lc 'test -w /software && test -w /data/rancher/automation && test ! -S /var/run/docker.sock'
 
-deps_command='set -Eeuo pipefail; export DEBIAN_FRONTEND=noninteractive; if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y --no-upgrade ca-certificates curl unzip python3 iputils-ping; else echo UNSUPPORTED_CONTROL_CONTAINER; exit 6; fi; terraform_version="'"$terraform_version"'"; if ! command -v terraform >/dev/null 2>&1 || ! terraform version | grep -Fq "v${terraform_version}"; then mkdir -p /software/terraform; archive=/software/terraform/terraform_${terraform_version}_linux_amd64.zip; if [[ ! -s "$archive" ]]; then [[ "'"$mode"'" == online ]] || { echo OFFLINE_FILE_MISSING:"$archive"; exit 10; }; curl --fail --location --retry 3 -o "$archive" "https://releases.hashicorp.com/terraform/${terraform_version}/terraform_${terraform_version}_linux_amd64.zip"; fi; tmp=$(mktemp -d); unzip -oq "$archive" -d "$tmp"; install -m 0755 "$tmp/terraform" /usr/local/bin/terraform; rm -rf "$tmp"; fi; terraform version'
-docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/install-control-dependencies.log" bash -lc "set -a; source '$run_dir/.runtime.env'; set +a; $deps_command"
+docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/install-control-dependencies.log" \
+  bash "$run_dir/install-control-dependencies.sh" "$run_dir" "$mode" "$terraform_version"
 
 ip_args=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["ips"]))' "$run_dir/vm-input.json")
 docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/ip-conflicts.log" bash -lc "python3 '$run_dir/check-ip-conflicts.py' $ip_args"

@@ -359,6 +359,19 @@ def test_only_the_vm_executor_may_import_ssh_client() -> None:
     assert imported.isdisjoint(forbidden)
 
 
+def test_vm_dependency_installer_handles_pristine_tzdata_with_readonly_localtime() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    installer = (assets / "install-control-dependencies.sh").read_text(encoding="utf-8")
+
+    assert '-v /etc/localtime:/etc/localtime:ro' in runner
+    assert 'install-control-dependencies.sh' in runner
+    assert "tzdata.postinst" in installer
+    assert "dpkg --configure -a" in installer
+    assert "apt-mark hold tzdata" in installer
+    assert "mv -f \"$backup\" \"$postinst\"" in installer
+
+
 def test_successful_executor_persists_vm_result(tmp_path: Path) -> None:
     secret_root = tmp_path / "secrets"
     write_required_secrets(secret_root)
