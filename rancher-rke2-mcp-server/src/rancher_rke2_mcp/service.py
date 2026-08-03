@@ -33,6 +33,11 @@ def _iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def _run_id(value: datetime) -> str:
+    """Create an operator-readable, collision-resistant run identifier."""
+    return f"run-{value.strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:12]}"
+
+
 def _envelope(
     *,
     ok: bool,
@@ -368,7 +373,7 @@ class ReadOnlyPlanningService:
                 errors=[
                     {
                         "path": "plan_id",
-                        "message": "0.5.5 accepts only a VM-only plan for start_run.",
+                        "message": "0.5.6 accepts only a VM-only plan for start_run.",
                     }
                 ],
             )
@@ -438,8 +443,9 @@ class ReadOnlyPlanningService:
                 state="NOT_FOUND",
                 errors=[{"path": "config_digest", "message": "Configuration is unavailable."}],
             )
-        created_at = _iso(_now())
-        run_id = "run-" + uuid4().hex
+        created_time = _now()
+        created_at = _iso(created_time)
+        run_id = _run_id(created_time)
         run = {
             "run_id": run_id,
             "state": "QUEUED",

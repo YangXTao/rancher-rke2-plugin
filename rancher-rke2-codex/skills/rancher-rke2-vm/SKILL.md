@@ -20,7 +20,7 @@ apply only when their named tools are available.
 2. Build a plan with `target_components: ["vm"]`.
 3. Present the server's redacted VM inventory, IP-conflict findings, Provider/cache
    requirements, and planned creates or updates.
-4. In server 0.5.5, show the exact plan approval text and explain that this invokes
+4. In server 0.5.6, show the exact plan approval text and explain that this invokes
    Terraform against vCenter. Only after explicit user approval, call `start_run`
    with the matching `preflight_id` and a stable idempotency key.
 5. Track `QUEUED`, then `SUCCEEDED` or `FAILED` with `get_run` and `get_run_events`.

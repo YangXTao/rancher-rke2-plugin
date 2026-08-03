@@ -4,6 +4,7 @@ import asyncio
 import ast
 import json
 from pathlib import Path
+import re
 import socket
 import sqlite3
 from unittest.mock import patch
@@ -219,6 +220,7 @@ def test_start_run_requires_current_preflight_and_is_idempotent(tmp_path: Path) 
     assert first["ok"] is True
     assert first["state"] == "QUEUED"
     run_id = first["data"]["run"]["run_id"]
+    assert re.fullmatch(r"run-\d{8}T\d{6}Z-[0-9a-f]{12}", run_id)
 
     replay = service.start_run(
         plan_id=plan["plan_id"],

@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.5.5
+# Rancher/RKE2 MCP Server 0.5.6
+
+## 0.5.6 timestamped run IDs
+
+New runs are assigned an operator-readable UTC timestamp and a random suffix, for
+example `run-20260803T085142Z-a1b2c3d4e5f6`. Existing run IDs remain readable and
+unchanged.
 
 ## 0.5.5 persistent vSphere Provider mirror
 

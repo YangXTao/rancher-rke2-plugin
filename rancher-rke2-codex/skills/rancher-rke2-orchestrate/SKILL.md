@@ -33,7 +33,7 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
    then validate and build a fresh plan before running preflight again.
 10. If `start_run` is unavailable, stop after returning the plan and preflight result
    and state that this server version is preflight-only. Do not ask for execution approval.
-11. In server 0.5.5, `start_run` accepts only a VM-only plan. It validates a matching
+11. In server 0.5.6, `start_run` accepts only a VM-only plan. It validates a matching
    current `PASSED` preflight, exact plan approval text, stable idempotency key, and
    a server-mounted `control_host_known_hosts` file. It then queues Terraform on the
    declared SSH control host, inside the configured control container. This is a real
