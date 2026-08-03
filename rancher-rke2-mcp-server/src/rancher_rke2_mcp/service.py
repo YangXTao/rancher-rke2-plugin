@@ -180,7 +180,7 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "state": "PLANNED",
             "read_only": True,
-            "executable": components == ["vm"],
+            "executable": components in (["vm"], ["node-init"]),
             "config_digest": config_digest,
             "target_components": components,
             "created_at": _iso(created),
