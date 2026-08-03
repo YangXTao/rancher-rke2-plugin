@@ -234,7 +234,7 @@ class ReadOnlyPlanningService:
         checks = NonMutatingPreflight(
             DockerSecretResolver(self.secret_root),
             timeout_seconds=self.preflight_timeout_seconds,
-        ).run(config)
+        ).run(config, planned_components=plan["target_components"])
         failed = sum(item["status"] == "FAILED" for item in checks)
         passed = sum(item["status"] == "PASSED" for item in checks)
         skipped = sum(item["status"] == "SKIPPED" for item in checks)

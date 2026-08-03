@@ -26,7 +26,9 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
 8. If `preflight_plan` is available, call it with the returned `plan_id`, then call
    `get_preflight` when a durable readback is needed. Present every failed check.
    Preflight checks Docker Secret availability and TCP reachability only; it never
-   authenticates, executes commands, or changes infrastructure.
+   authenticates, executes commands, or changes infrastructure. If a plan includes
+   `vm`, node SSH checks must be `SKIPPED` because those nodes are intended to be
+   created; control-host, vCenter, registry, and optional proxy checks remain in scope.
 9. If preflight is `FAILED`, stop. The user must repair the reported prerequisite,
    then validate and build a fresh plan before running preflight again.
 10. If `start_run` is unavailable, stop after returning the plan and preflight result

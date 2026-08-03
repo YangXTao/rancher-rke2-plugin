@@ -1,15 +1,17 @@
-# Rancher/RKE2 MCP Server 0.3.0
+# Rancher/RKE2 MCP Server 0.3.1
 
-## 0.3.0 non-mutating preflight
+## 0.3.1 non-mutating preflight
 
 `preflight_plan(plan_id)` verifies that referenced Docker Secret files are mounted
-and non-empty, then opens short-lived TCP connections to the control host, planned
-nodes, vCenter, registry, and optional proxy. It does **not** authenticate, run
+and non-empty, then opens short-lived TCP connections to the control host, vCenter,
+registry, and optional proxy. When the plan includes the `vm` component, its target
+nodes are still intended resources, so their SSH checks are reported as `SKIPPED`.
+For plans that do not include `vm`, target node SSH TCP checks are performed. It does **not** authenticate, run
 SSH commands, call vSphere APIs, or change any infrastructure. Results are saved
 without Secret values and can be read with `get_preflight(preflight_id)`.
 
 The Compose service now mounts `proxy_password` and `registry_password` too. Create
-both files before starting the 0.3.0 container; use an empty file only when that
+both files before starting the 0.3.1 container; use an empty file only when that
 Secret is not referenced by the configuration.
 
 这是一个远程 Docker 部署的无破坏性 MCP Server，用于校验 Rancher/RKE2

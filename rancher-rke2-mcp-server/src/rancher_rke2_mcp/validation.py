@@ -122,6 +122,10 @@ def config_schema() -> dict[str, Any]:
     schema["x-non-mutating-preflight"] = {
         "available": True,
         "checks": ["mounted_secret_availability", "tcp_reachability"],
+        "node_ssh_policy": (
+            "Node SSH checks are skipped when the plan includes the VM component; "
+            "they are checked only for plans that do not create VMs."
+        ),
         "does_not_perform": ["authentication", "remote_command_execution"],
     }
     return schema

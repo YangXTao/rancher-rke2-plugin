@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.3.0",
+  "contract_version": "0.3.1",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -36,7 +36,7 @@
       "name": "preflight_plan",
       "mutation": false,
       "required": ["plan_id"],
-      "purpose": "Verify mounted Docker Secret availability and TCP reachability for a valid plan without authenticating or changing infrastructure."
+      "purpose": "Verify mounted Docker Secret availability and required TCP reachability for a valid plan without authenticating or changing infrastructure. Node SSH checks are skipped when the plan includes VM creation."
     },
     {
       "name": "get_preflight",

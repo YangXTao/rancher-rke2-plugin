@@ -43,10 +43,20 @@ class NonMutatingPreflight:
         self.timeout_seconds = timeout_seconds
         self.tcp_probe = tcp_probe
 
-    def run(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+    def run(
+        self,
+        config: dict[str, Any],
+        *,
+        planned_components: list[str],
+    ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         checks.extend(self._secret_checks(config))
-        checks.extend(self._connectivity_checks(config))
+        checks.extend(
+            self._connectivity_checks(
+                config,
+                node_ssh_required="vm" not in planned_components,
+            )
+        )
         return checks
 
     def _secret_checks(self, config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -93,7 +103,12 @@ class NonMutatingPreflight:
                 )
         return checks
 
-    def _connectivity_checks(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+    def _connectivity_checks(
+        self,
+        config: dict[str, Any],
+        *,
+        node_ssh_required: bool,
+    ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         control_host = config["execution"]["control_host"]
         checks.append(
@@ -112,11 +127,22 @@ class NonMutatingPreflight:
             *config["nodes"]["downstream"]["workers"],
         ]
         for node in nodes:
-            checks.append(
-                self._tcp_check(
-                    f"tcp.node_ssh.{node['hostname']}", str(node["ip"]), node_port
+            name = f"tcp.node_ssh.{node['hostname']}"
+            if node_ssh_required:
+                checks.append(self._tcp_check(name, str(node["ip"]), node_port))
+            else:
+                checks.append(
+                    self._check(
+                        name=name,
+                        category="connectivity",
+                        status="SKIPPED",
+                        target={"host": str(node["ip"]), "port": node_port},
+                        message=(
+                            "Node SSH check is deferred because this plan includes the VM "
+                            "component and the node is an intended, not yet created resource."
+                        ),
+                    )
                 )
-            )
 
         checks.append(self._parsed_tcp_check("tcp.vsphere_https", config["vsphere"]["server"], 443))
         checks.append(self._parsed_tcp_check("tcp.registry_https", config["registry"]["hostname"], 443))

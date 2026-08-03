@@ -199,13 +199,39 @@ def test_preflight_checks_secret_availability_and_tcp_without_exposing_values(
     assert preflight["non_mutating"] is True
     assert preflight["authentication_attempted"] is False
     assert preflight["summary"]["failed"] == 0
+    assert preflight["summary"]["skipped"] == 13
     assert any(item["name"] == "tcp.vsphere_https" for item in preflight["checks"])
+    assert all(
+        item["status"] == "SKIPPED"
+        for item in preflight["checks"]
+        if item["name"].startswith("tcp.node_ssh.")
+    )
     serialized = json.dumps(preflight, ensure_ascii=False)
     assert "control_host_password-value" not in serialized
     assert "node_password-value" not in serialized
 
     fetched = service.get_preflight(preflight["preflight_id"])
     assert fetched["state"] == "PASSED"
+
+
+def test_preflight_checks_node_ssh_when_plan_does_not_include_vm(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    validation = service.validate_config(EXAMPLE)
+    plan = service.build_plan(validation["data"]["config_digest"], ["node-init"])
+
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        result = service.preflight_plan(plan["data"]["plan"]["plan_id"])
+
+    checks = result["data"]["preflight"]["checks"]
+    node_checks = [
+        item for item in checks if item["name"].startswith("tcp.node_ssh.")
+    ]
+    assert len(node_checks) == 10
+    assert all(item["status"] == "PASSED" for item in node_checks)
 
 
 def test_preflight_reports_unmounted_secret_without_returning_reference_value(

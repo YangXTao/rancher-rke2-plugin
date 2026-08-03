@@ -1,6 +1,6 @@
 # Rancher/RKE2 MCP Automation
 
-This repository contains the 0.3.0 release for a remote, TLS-protected
+This repository contains the 0.3.1 release for a remote, TLS-protected
 Rancher/RKE2 MCP planning and non-mutating preflight service and its Codex Plugin.
 
 ## Contents
@@ -18,6 +18,10 @@ never commit secret values.
 
 ## Baseline behavior
 
-Version 0.3.0 exposes non-mutating planning and preflight tools:
+Version 0.3.1 exposes non-mutating planning and preflight tools:
 `get_capabilities`, `get_config_schema`, `validate_config`, `build_plan`,
 `get_plan`, `preflight_plan`, and `get_preflight`.
+
+When a plan includes `vm`, its target nodes are treated as not yet created and
+their SSH checks are skipped. vCenter, registry, control-host, and optional proxy
+TCP checks remain required.
