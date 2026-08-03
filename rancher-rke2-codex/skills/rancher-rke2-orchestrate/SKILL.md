@@ -23,15 +23,22 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
 6. Call `build_plan` with the returned `config_digest`.
 7. Call `get_plan` and present scope, prerequisites, warnings, destructive effects,
    run mode, and the exact approval text. Planning is read-only.
-8. If `start_run` is unavailable, stop after returning the plan and state that this
-   server version is planning-only. Do not ask for execution approval.
-9. If `start_run` is available, ask for one explicit approval only after the plan is
+8. If `preflight_plan` is available, call it with the returned `plan_id`, then call
+   `get_preflight` when a durable readback is needed. Present every failed check.
+   Preflight checks Docker Secret availability and TCP reachability only; it never
+   authenticates, executes commands, or changes infrastructure.
+9. If preflight is `FAILED`, stop. The user must repair the reported prerequisite,
+   then validate and build a fresh plan before running preflight again.
+10. If `start_run` is unavailable, stop after returning the plan and preflight result
+   and state that this server version is preflight-only. Do not ask for execution approval.
+11. If `start_run` is available, require a `PASSED` preflight for the same unexpired
+   plan, then ask for one explicit approval only after the plan is
    stable. Do not treat earlier general consent as plan approval.
-10. Call `start_run` with `plan_id`, `config_digest`, the exact `approval_text`, and
-    a stable `idempotency_key`.
-11. Track progress only through available tools such as `get_run` and
-    `get_run_events`. Use `resume_run` only for the same persisted `run_id`.
-12. Before declaring success, call `get_run` again and require run state
+12. Call `start_run` with `plan_id`, `config_digest`, `preflight_id`, the exact `approval_text`, and
+   a stable `idempotency_key`.
+13. Track progress only through available tools such as `get_run` and
+   `get_run_events`. Use `resume_run` only for the same persisted `run_id`.
+14. Before declaring success, call `get_run` again and require run state
     `SUCCEEDED` plus successful required component verification.
 
 When the user asks for help, a schema, an explanation, a plan, or status, remain
@@ -48,6 +55,8 @@ read-only. Do not start a run unless the user explicitly authorizes execution.
 - Secret values are provisioned out of band on the MCP host. Never ask the user to
   paste them into chat or include them in tool arguments, plans, events, or logs.
 - If a plan expires or the configuration changes, validate and build a new plan.
+- Never reinterpret a TCP pass as successful SSH, vSphere, Registry, or proxy
+  authentication. Those authenticated checks belong to a later server version.
 - For a failed run, report the failed component and checkpoint. Do not auto-retry.
 - For VM destruction, use `$rancher-rke2-vm`; never reinterpret a normal approval
   as destruction approval.

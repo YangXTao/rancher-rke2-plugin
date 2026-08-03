@@ -1,4 +1,11 @@
-# Rancher RKE2 Codex Plugin 0.2.0
+# Rancher RKE2 Codex Plugin 0.3.0
+
+## 0.3.0 preflight workflow
+
+After `build_plan` and `get_plan`, the orchestration Skill calls
+`preflight_plan`. A failed result stops the workflow before future execution tools
+could be considered. A passed TCP check proves reachability only; it is not an SSH,
+vSphere, registry, or proxy authentication result.
 
 这是 Rancher/RKE2 自动化体系的 Codex 客户端Plugin。它通过一个领域 MCP
 Server完成规划、未来执行、状态跟踪、诊断和审计。
@@ -23,7 +30,7 @@ Server完成规划、未来执行、状态跟踪、诊断和审计。
 
 ## 接入
 
-1. 部署 `rancher-rke2-mcp-server` 0.2.0。
+1. 部署 `rancher-rke2-mcp-server` 0.3.0。
 2. 用受Windows信任的证书启用HTTPS。
 3. 确认 `.mcp.json` 地址与证书SAN一致。
 4. 在Codex客户端设置 `RANCHER_RKE2_MCP_TOKEN`。

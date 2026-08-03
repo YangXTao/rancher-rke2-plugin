@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server Contract 0.2.0
+# Rancher/RKE2 MCP Server Contract 0.3.0
+
+## Implemented preflight boundary
+
+Server 0.3.0 additionally implements `preflight_plan` and `get_preflight`.
+Preflight can resolve mounted Secret availability and test TCP reachability only.
+It does not authenticate against SSH, vCenter, registry, or proxy services, and it
+does not make any infrastructure change.
 
 ## 服务职责
 
@@ -44,7 +51,7 @@ Skill只决定调用顺序和用户解释，不得绕过MCP Server直接执行�
 
 ## 当前实现边界
 
-Server 0.2.0只实现：
+Server 0.3.0已实现：
 
 ```text
 get_capabilities
@@ -52,6 +59,8 @@ get_config_schema
 validate_config
 build_plan
 get_plan
+preflight_plan
+get_preflight
 ```
 
 这些工具不会探测或修改vSphere、Linux、Kubernetes、Rancher或Harbor。

@@ -22,14 +22,17 @@ READ_ONLY_TOOLS = (
     "validate_config",
     "build_plan",
     "get_plan",
+    "preflight_plan",
+    "get_preflight",
 )
 
 MUTATION_TOOLS = ()
 
-SCHEMA_VERSION = "0.2.0"
-CONTRACT_VERSION = "0.2.0"
-SERVER_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
+CONTRACT_VERSION = "0.3.0"
+SERVER_VERSION = "0.3.0"
 MAX_YAML_BYTES = 1024 * 1024
 PLAN_TTL_HOURS = 24
+PREFLIGHT_TCP_TIMEOUT_SECONDS = 5.0
 
 SECRET_REFERENCE_SCHEMES = ("docker-secret",)

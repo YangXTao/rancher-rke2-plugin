@@ -1,7 +1,7 @@
 # Rancher/RKE2 MCP Automation
 
-This repository contains the 0.2.0 baseline for a remote, TLS-protected
-Rancher/RKE2 MCP planning service and its Codex Plugin.
+This repository contains the 0.3.0 release for a remote, TLS-protected
+Rancher/RKE2 MCP planning and non-mutating preflight service and its Codex Plugin.
 
 ## Contents
 
@@ -18,6 +18,6 @@ never commit secret values.
 
 ## Baseline behavior
 
-Version 0.2.0 exposes only read-only planning tools:
-`get_capabilities`, `get_config_schema`, `validate_config`, `build_plan`, and
-`get_plan`.
+Version 0.3.0 exposes non-mutating planning and preflight tools:
+`get_capabilities`, `get_config_schema`, `validate_config`, `build_plan`,
+`get_plan`, `preflight_plan`, and `get_preflight`.

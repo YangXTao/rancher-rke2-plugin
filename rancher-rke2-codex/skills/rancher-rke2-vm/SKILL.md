@@ -8,9 +8,10 @@ description: Plan, inspect, execute, resume, or destroy the VMware vSphere VM co
 Operate only component `vm` through the domain MCP server. Never invoke Terraform,
 vSphere, ping, SSH, or Docker directly.
 
-Call `get_capabilities` first. Treat its tool list as authoritative. If `start_run`
-is unavailable, stop after `get_plan`, return the planning result, and state that
-the current server is planning-only. The execution and destruction steps below
+Call `get_capabilities` first. Treat its tool list as authoritative. If
+`preflight_plan` is available, call it after `get_plan`; stop and report failed
+Secret or TCP checks. If `start_run` is unavailable, stop after the plan and
+preflight result and state that the current server is preflight-only. The execution and destruction steps below
 apply only when their named tools are available.
 
 ## Create or Resume

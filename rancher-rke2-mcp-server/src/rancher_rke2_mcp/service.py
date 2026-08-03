@@ -12,11 +12,14 @@ from .constants import (
     CONTRACT_VERSION,
     MUTATION_TOOLS,
     PLAN_TTL_HOURS,
+    PREFLIGHT_TCP_TIMEOUT_SECONDS,
     READ_ONLY_TOOLS,
     SCHEMA_VERSION,
     SECRET_REFERENCE_SCHEMES,
     SERVER_VERSION,
 )
+from .preflight import NonMutatingPreflight
+from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
 
@@ -49,8 +52,16 @@ def _envelope(
 
 
 class ReadOnlyPlanningService:
-    def __init__(self, store: SQLiteStore):
+    def __init__(
+        self,
+        store: SQLiteStore,
+        *,
+        secret_root: str = "/run/secrets",
+        preflight_timeout_seconds: float = PREFLIGHT_TCP_TIMEOUT_SECONDS,
+    ):
         self.store = store
+        self.secret_root = secret_root
+        self.preflight_timeout_seconds = preflight_timeout_seconds
 
     def get_capabilities(self) -> dict[str, Any]:
         return _envelope(
@@ -71,6 +82,9 @@ class ReadOnlyPlanningService:
                 "plaintext_credentials_compatible": False,
                 "secret_reference_schemes": list(SECRET_REFERENCE_SCHEMES),
                 "secrets_persisted": False,
+                "preflight_network_checks": True,
+                "preflight_authentication_attempted": False,
+                "preflight_mutates_infrastructure": False,
                 "transport_security_required": True,
             },
         )
@@ -162,6 +176,7 @@ class ReadOnlyPlanningService:
             "warnings": [
                 "这是静态部署计划，不代表目标环境已经具备条件。",
                 "计划不包含执行命令，也不能启动、续跑或销毁基础设施。",
+                "在计划有效期内可调用 preflight_plan 执行非变更前置检查。",
                 "SQLite 只保存 Secret 引用；真实凭据不进入配置摘要或计划。",
             ],
             "approval_text": f"APPROVE PLAN {plan_id}",
@@ -182,6 +197,86 @@ class ReadOnlyPlanningService:
         state = "EXPIRED" if expires <= _now() else "PLANNED"
         plan["state"] = state
         return _envelope(ok=True, state=state, data={"plan": plan})
+
+    def preflight_plan(self, plan_id: str) -> dict[str, Any]:
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        expires = datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00"))
+        if expires <= _now():
+            return _envelope(
+                ok=False,
+                state="EXPIRED",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "Plan has expired; validate configuration and build a new plan.",
+                    }
+                ],
+            )
+        config = self.store.get_config(plan["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "The configuration associated with this plan is unavailable.",
+                    }
+                ],
+            )
+
+        checks = NonMutatingPreflight(
+            DockerSecretResolver(self.secret_root),
+            timeout_seconds=self.preflight_timeout_seconds,
+        ).run(config)
+        failed = sum(item["status"] == "FAILED" for item in checks)
+        passed = sum(item["status"] == "PASSED" for item in checks)
+        skipped = sum(item["status"] == "SKIPPED" for item in checks)
+        state = "PASSED" if failed == 0 else "FAILED"
+        created_at = _iso(_now())
+        preflight = {
+            "preflight_id": "preflight-" + uuid4().hex,
+            "plan_id": plan_id,
+            "config_digest": plan["config_digest"],
+            "state": state,
+            "non_mutating": True,
+            "authentication_attempted": False,
+            "created_at": created_at,
+            "expires_at": plan["expires_at"],
+            "summary": {"passed": passed, "failed": failed, "skipped": skipped},
+            "checks": checks,
+        }
+        self.store.save_preflight(preflight)
+        return _envelope(
+            ok=failed == 0,
+            state=state,
+            data={"preflight": preflight},
+            warnings=[
+                "Preflight only resolves Secret availability and opens TCP connections; it does not authenticate, execute commands, or change infrastructure."
+            ],
+        )
+
+    def get_preflight(self, preflight_id: str) -> dict[str, Any]:
+        preflight = self.store.get_preflight(preflight_id)
+        if preflight is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "preflight_id", "message": "Unknown preflight ID."}],
+            )
+        expires = datetime.fromisoformat(
+            preflight["expires_at"].replace("Z", "+00:00")
+        )
+        state = "EXPIRED" if expires <= _now() else preflight["state"]
+        return _envelope(
+            ok=state == "PASSED", state=state, data={"preflight": preflight}
+        )
 
     @staticmethod
     def _normalize_components(target_components: list[str]) -> list[str]:

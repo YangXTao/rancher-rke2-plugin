@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rancher-rke2-mcp-server"
-version = "0.2.0"
-description = "Secret-reference-only planning MCP server for Rancher and RKE2 automation."
+version = "0.3.0"
+description = "Secret-reference-only planning and non-mutating preflight MCP server for Rancher and RKE2 automation."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

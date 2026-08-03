@@ -14,19 +14,29 @@ from .service import ReadOnlyPlanningService
 from .storage import SQLiteStore
 
 
-def create_server(db_path: str | Path | None = None) -> MCPServer:
+def create_server(
+    db_path: str | Path | None = None,
+    *,
+    secret_root: str | Path | None = None,
+) -> MCPServer:
     store_path = db_path or os.environ.get(
         "RANCHER_RKE2_MCP_DB",
         "./data/state.db",
     )
-    service = ReadOnlyPlanningService(SQLiteStore(store_path))
+    service = ReadOnlyPlanningService(
+        SQLiteStore(store_path),
+        secret_root=str(
+            secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")
+        ),
+    )
     server = MCPServer(
         name="rancher-rke2",
         title="Rancher/RKE2 Read-Only Planner",
-        description="Validates YAML and creates non-executable deployment plans.",
+        description="Validates YAML, creates non-executable plans, and performs non-mutating preflight checks.",
         instructions=(
-            "This server is read-only. It exposes no infrastructure execution, "
-            "retry, cancellation, or destruction tools."
+            "This server is non-mutating. Preflight resolves only Secret availability "
+            "and TCP reachability; it does not authenticate, execute, retry, cancel, "
+            "or destroy infrastructure."
         ),
         version=SERVER_VERSION,
     )
@@ -58,6 +68,16 @@ def create_server(db_path: str | Path | None = None) -> MCPServer:
     def get_plan(plan_id: str) -> dict[str, Any]:
         """Read a previously generated non-executable plan."""
         return service.get_plan(plan_id)
+
+    @server.tool()
+    def preflight_plan(plan_id: str) -> dict[str, Any]:
+        """Check mounted Secret availability and endpoint TCP reachability without changes."""
+        return service.preflight_plan(plan_id)
+
+    @server.tool()
+    def get_preflight(preflight_id: str) -> dict[str, Any]:
+        """Read a previously generated non-mutating preflight result."""
+        return service.get_preflight(preflight_id)
 
     return server
 

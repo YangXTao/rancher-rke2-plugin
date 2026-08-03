@@ -119,4 +119,9 @@ def config_schema() -> dict[str, Any]:
     schema["x-read-only-planning"] = True
     schema["x-plaintext-credentials-compatible"] = False
     schema["x-secret-reference-schemes"] = ["docker-secret"]
+    schema["x-non-mutating-preflight"] = {
+        "available": True,
+        "checks": ["mounted_secret_availability", "tcp_reachability"],
+        "does_not_perform": ["authentication", "remote_command_execution"],
+    }
     return schema

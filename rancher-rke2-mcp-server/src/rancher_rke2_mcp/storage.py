@@ -36,6 +36,15 @@ class SQLiteStore:
                     FOREIGN KEY(config_digest)
                         REFERENCES validated_configs(config_digest)
                 );
+                CREATE TABLE IF NOT EXISTS preflights (
+                    preflight_id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    config_digest TEXT NOT NULL,
+                    preflight_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY(plan_id) REFERENCES plans(plan_id)
+                );
                 """
             )
             connection.commit()
@@ -104,3 +113,31 @@ class SQLiteStore:
                 (plan_id,),
             ).fetchone()
         return json.loads(row["plan_json"]) if row else None
+
+    def save_preflight(self, preflight: dict[str, Any]) -> None:
+        payload = json.dumps(preflight, ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO preflights(
+                    preflight_id, plan_id, config_digest, preflight_json,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    preflight["preflight_id"],
+                    preflight["plan_id"],
+                    preflight["config_digest"],
+                    payload,
+                    preflight["created_at"],
+                    preflight["expires_at"],
+                ),
+            )
+
+    def get_preflight(self, preflight_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT preflight_json FROM preflights WHERE preflight_id = ?",
+                (preflight_id,),
+            ).fetchone()
+        return json.loads(row["preflight_json"]) if row else None

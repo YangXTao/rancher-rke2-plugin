@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import socket
 import sqlite3
+from unittest.mock import patch
 
 import httpx2
 from mcp import Client
@@ -25,8 +26,24 @@ EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
 )
 
 
-def make_service(tmp_path: Path) -> ReadOnlyPlanningService:
-    return ReadOnlyPlanningService(SQLiteStore(tmp_path / "state.db"))
+def make_service(
+    tmp_path: Path, *, secret_root: Path | None = None
+) -> ReadOnlyPlanningService:
+    return ReadOnlyPlanningService(
+        SQLiteStore(tmp_path / "state.db"),
+        secret_root=str(secret_root or tmp_path / "secrets"),
+    )
+
+
+def write_required_secrets(secret_root: Path) -> None:
+    secret_root.mkdir()
+    for name in (
+        "control_host_password",
+        "node_password",
+        "vsphere_password",
+        "rancher_bootstrap_password",
+    ):
+        (secret_root / name).write_text(f"{name}-value\n", encoding="utf-8")
 
 
 def test_validates_yaml_with_secret_references(tmp_path: Path) -> None:
@@ -134,14 +151,14 @@ def test_legacy_sqlite_row_with_plaintext_secret_is_not_returned(
     assert store.get_config("sha256:legacy") is None
 
 
-def test_mcp_client_discovers_exactly_five_read_only_tools(tmp_path: Path) -> None:
+def test_mcp_client_discovers_exactly_seven_non_mutating_tools(tmp_path: Path) -> None:
     async def scenario() -> None:
         server = create_server(tmp_path / "state.db")
         async with Client(server) as client:
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
             assert set(names) == set(READ_ONLY_TOOLS)
-            assert len(names) == 5
+            assert len(names) == 7
             capability = await client.call_tool("get_capabilities", {})
             assert capability.structured_content["ok"] is True
             assert capability.structured_content["data"]["mutation_tools"] == []
@@ -152,8 +169,63 @@ def test_mcp_client_discovers_exactly_five_read_only_tools(tmp_path: Path) -> No
                 is False
             )
             assert capability.structured_content["data"]["secrets_persisted"] is False
+            assert capability.structured_content["data"]["preflight_mutates_infrastructure"] is False
 
     asyncio.run(scenario())
+
+
+def test_preflight_checks_secret_availability_and_tcp_without_exposing_values(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    validation = service.validate_config(EXAMPLE)
+    plan = service.build_plan(validation["data"]["config_digest"], ["all"])
+    plan_id = plan["data"]["plan"]["plan_id"]
+
+    with patch(
+        "rancher_rke2_mcp.preflight._default_tcp_probe",
+        return_value=None,
+    ):
+        # The default argument is bound at construction time, so patch the socket
+        # primitive used by that probe rather than contacting example endpoints.
+        with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+            result = service.preflight_plan(plan_id)
+
+    assert result["ok"] is True
+    assert result["state"] == "PASSED"
+    preflight = result["data"]["preflight"]
+    assert preflight["non_mutating"] is True
+    assert preflight["authentication_attempted"] is False
+    assert preflight["summary"]["failed"] == 0
+    assert any(item["name"] == "tcp.vsphere_https" for item in preflight["checks"])
+    serialized = json.dumps(preflight, ensure_ascii=False)
+    assert "control_host_password-value" not in serialized
+    assert "node_password-value" not in serialized
+
+    fetched = service.get_preflight(preflight["preflight_id"])
+    assert fetched["state"] == "PASSED"
+
+
+def test_preflight_reports_unmounted_secret_without_returning_reference_value(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    secret_root.mkdir()
+    service = make_service(tmp_path, secret_root=secret_root)
+    validation = service.validate_config(EXAMPLE)
+    plan = service.build_plan(validation["data"]["config_digest"], ["vm"])
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        result = service.preflight_plan(plan["data"]["plan"]["plan_id"])
+
+    assert result["ok"] is False
+    assert result["state"] == "FAILED"
+    checks = result["data"]["preflight"]["checks"]
+    assert any(
+        item["name"] == "secret.control_host_password" and item["status"] == "FAILED"
+        for item in checks
+    )
 
 
 def test_source_has_no_infrastructure_execution_imports() -> None:
