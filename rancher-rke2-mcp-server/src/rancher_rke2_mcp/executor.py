@@ -269,3 +269,71 @@ class VmExecutor:
             )
             values.update({"HTTP_PROXY": endpoint, "HTTPS_PROXY": endpoint, "http_proxy": endpoint, "https_proxy": endpoint})
         return "".join(f"export {key}={shlex.quote(value)}\n" for key, value in values.items())
+
+
+class NodeInitExecutor(VmExecutor):
+    """Execute the packaged node-initialization Ansible project remotely."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.assets_root = Path(__file__).parent / "assets" / "node-init"
+
+    def submit(
+        self, *, config: dict[str, Any], run_id: str,
+        on_complete: Callable[[ExecutionResult], None],
+    ) -> None:
+        Thread(target=self._run_and_report, args=(config, run_id, on_complete), daemon=True,
+               name=f"rancher-rke2-node-init-{run_id[-8:]}").start()
+
+    def _run_and_report(self, config: dict[str, Any], run_id: str,
+                        on_complete: Callable[[ExecutionResult], None]) -> None:
+        artifact_path = f"{str(config['run']['workspace']).rstrip('/')}/runs/{run_id}/node-init"
+        try:
+            self._run_node_init(config, artifact_path)
+        except Exception:
+            on_complete(ExecutionResult(run_id, False, "NODE_INIT_EXECUTION_FAILED", artifact_path))
+            return
+        on_complete(ExecutionResult(run_id, True, "NODE_INIT_SUCCEEDED", artifact_path))
+
+    def _run_node_init(self, config: dict[str, Any], artifact_path: str) -> None:
+        import paramiko
+        control = config["execution"]["control_host"]
+        client = paramiko.SSHClient()
+        client.load_host_keys(str(self.known_hosts_path))
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        password = DockerSecretResolver(self.secret_root).resolve(control["password_ref"])
+        try:
+            client.connect(hostname=str(control["address"]), port=int(control["port"]),
+                           username=str(control["username"]), password=password,
+                           allow_agent=False, look_for_keys=False, timeout=15,
+                           banner_timeout=15, auth_timeout=15)
+            self._upload_node_bundle(client, config, artifact_path)
+            container = config["execution"]["container"]
+            command = " ".join(shlex.quote(value) for value in (
+                "bash", f"{artifact_path}/node-init-runner.sh", artifact_path,
+                str(container["name"]), str(container["image"]), str(container["strategy"]),
+                str(config["downloads"]["software_root"]), str(config["run"]["workspace"]),
+                str(config["downloads"]["mode"])))
+            _, stdout, stderr = client.exec_command(command, timeout=3600)
+            if stdout.channel.recv_exit_status() != 0:
+                raise RuntimeError("remote node-init runner failed")
+            stdout.read(); stderr.read()
+        finally:
+            client.close()
+
+    def _upload_node_bundle(self, client: Any, config: dict[str, Any], run_dir: str) -> None:
+        sftp = client.open_sftp()
+        try:
+            self._mkdirs(sftp, run_dir)
+            for source in self.assets_root.rglob("*"):
+                if source.is_file():
+                    remote = f"{run_dir}/{source.relative_to(self.assets_root).as_posix()}"
+                    self._mkdirs(sftp, remote.rsplit("/", 1)[0]); sftp.put(str(source), remote)
+                    if source.suffix in {".sh", ".py"}: sftp.chmod(remote, 0o700)
+            self._put_text(sftp, f"{run_dir}/.dependency.env", self._dependency_env(config), mode=0o600)
+            resolver = DockerSecretResolver(self.secret_root)
+            inventory = {"all": {"vars": {"ansible_connection": "paramiko", "ansible_user": config["node_access"]["username"], "ansible_password": resolver.resolve(config["node_access"]["password_ref"]), "ansible_become_password": resolver.resolve(config["node_access"]["password_ref"])}, "hosts": {node["hostname"]: {"ansible_host": str(node["ip"])} for node in self._all_nodes(config)}}}
+            self._mkdirs(sftp, f"{run_dir}/ansible/inventory")
+            self._put_text(sftp, f"{run_dir}/ansible/inventory/hosts.yml", json.dumps(inventory), mode=0o600)
+        finally:
+            sftp.close()

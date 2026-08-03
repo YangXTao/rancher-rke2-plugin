@@ -1,0 +1,161 @@
+---
+- name: Detect supported operating-system branch
+  ansible.builtin.set_fact:
+    rancher_os_branch: >-
+      {{
+        'kylin-v11' if 'kylin' in (ansible_distribution | lower)
+        else 'ubuntu' if ansible_os_family == 'Debian'
+        else 'redhat' if ansible_os_family == 'RedHat'
+        else 'unsupported'
+      }}
+
+- name: Validate operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - rancher_os_branch in ['ubuntu', 'redhat', 'kylin-v11']
+      - ansible_architecture in ['x86_64', 'amd64']
+    fail_msg: "Unsupported host platform: {{ ansible_distribution }} {{ ansible_distribution_version }} / {{ ansible_architecture }}"
+
+- name: Warn about Kylin compatibility mode
+  ansible.builtin.debug:
+    msg: "Kylin V11 is running in compatibility mode; verify the selected RKE2/Rancher support matrix."
+  when: rancher_os_branch == 'kylin-v11'
+
+- name: Gather service state
+  ansible.builtin.service_facts:
+
+- name: Stop and disable firewalld when present
+  ansible.builtin.systemd:
+    name: firewalld
+    state: stopped
+    enabled: false
+  when: "'firewalld.service' in ansible_facts.services"
+
+- name: Stop and disable ufw when present
+  ansible.builtin.systemd:
+    name: ufw
+    state: stopped
+    enabled: false
+  when: "'ufw.service' in ansible_facts.services"
+
+- name: Read current SELinux mode when available
+  ansible.builtin.command: getenforce
+  register: rancher_selinux_mode
+  changed_when: false
+  failed_when: false
+
+- name: Disable enforcing SELinux immediately
+  ansible.builtin.command: setenforce 0
+  when: rancher_selinux_mode.rc == 0 and rancher_selinux_mode.stdout | trim == 'Enforcing'
+  changed_when: true
+
+- name: Check persistent SELinux configuration
+  ansible.builtin.stat:
+    path: /etc/selinux/config
+  register: rancher_selinux_config
+
+- name: Disable SELinux persistently
+  ansible.builtin.replace:
+    path: /etc/selinux/config
+    regexp: '^SELINUX=.*$'
+    replace: 'SELINUX=disabled'
+  when: rancher_selinux_config.stat.exists
+
+- name: Disable active swap
+  ansible.builtin.command: swapoff -a
+  when: ansible_swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Disable persistent swap entries
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s+.*)$'
+    replace: '# \1'
+
+- name: Persist required kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/rancher-rke2.conf
+    mode: '0644'
+    content: "{{ rancher_required_kernel_modules | join('\n') }}\n"
+  notify: restart systemd-modules-load
+
+- name: Load required kernel modules
+  ansible.builtin.command: "modprobe {{ item }}"
+  loop: "{{ rancher_required_kernel_modules }}"
+  changed_when: false
+
+- name: Remove legacy Rancher and RKE2 sysctl drop-in files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/sysctl.d/99-rancher.conf
+    - /etc/sysctl.d/99-rancher-rke2.conf
+  notify: apply sysctl
+
+- name: Persist sysctl configuration in the system main file
+  ansible.builtin.blockinfile:
+    path: "{{ rancher_sysctl_file }}"
+    create: true
+    mode: '0644'
+    marker: "# {mark} RANCHER RKE2 MANAGED SYSCTL"
+    block: |
+      {% for key, value in rancher_sysctl.items() %}
+      {{ key }}={{ value }}
+      {% endfor %}
+  notify: apply sysctl
+
+- name: Remove legacy Rancher and RKE2 limits drop-in files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/security/limits.d/99-rancher.conf
+    - /etc/security/limits.d/99-rancher-rke2.conf
+
+- name: Persist security limits in the system main file
+  ansible.builtin.blockinfile:
+    path: "{{ rancher_limits_file }}"
+    create: true
+    mode: '0644'
+    marker: "# {mark} RANCHER RKE2 MANAGED LIMITS"
+    block: "{{ rancher_limits | join('\n') }}"
+
+- name: Apply handlers before validation
+  ansible.builtin.meta: flush_handlers
+
+- name: Read active swap state
+  ansible.builtin.command: swapon --show --noheadings
+  register: rancher_swap_state
+  changed_when: false
+
+- name: Read active IPv4 forwarding value
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: rancher_ip_forward
+  changed_when: false
+
+- name: Read every configured sysctl value
+  ansible.builtin.command: "sysctl -n {{ item.key }}"
+  loop: "{{ rancher_sysctl | dict2items }}"
+  register: rancher_active_sysctls
+  changed_when: false
+
+- name: Validate every configured sysctl value
+  ansible.builtin.assert:
+    that:
+      - item.stdout.split() == (item.item.value | string).split()
+    fail_msg: >-
+      sysctl {{ item.item.key }} expected {{ item.item.value }} but got
+      {{ item.stdout | trim }}
+  loop: "{{ rancher_active_sysctls.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Validate initialization result
+  ansible.builtin.assert:
+    that:
+      - rancher_swap_state.stdout | trim == ''
+      - rancher_ip_forward.stdout | trim == '1'
+    fail_msg: Node initialization validation failed
+
+

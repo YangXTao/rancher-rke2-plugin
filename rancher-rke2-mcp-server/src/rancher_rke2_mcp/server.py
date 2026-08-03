@@ -9,7 +9,7 @@ import uvicorn
 
 from .auth import StaticBearerAuthMiddleware
 from .constants import SERVER_VERSION
-from .executor import VmExecutor
+from .executor import NodeInitExecutor, VmExecutor
 from .secrets import read_secret_setting
 from .service import ReadOnlyPlanningService
 from .storage import SQLiteStore
@@ -37,6 +37,10 @@ def create_server(
                 "RANCHER_RKE2_CONTROL_KNOWN_HOSTS",
                 "/run/secrets/control_host_known_hosts",
             ),
+        ),
+        node_executor=NodeInitExecutor(
+            secret_root=str(secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")),
+            known_hosts_path=os.environ.get("RANCHER_RKE2_CONTROL_KNOWN_HOSTS", "/run/secrets/control_host_known_hosts"),
         ),
     )
     server = MCPServer(

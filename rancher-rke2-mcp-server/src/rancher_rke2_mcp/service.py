@@ -19,7 +19,7 @@ from .constants import (
     SERVER_VERSION,
 )
 from .preflight import NonMutatingPreflight
-from .executor import ExecutionResult, VmExecutor
+from .executor import ExecutionResult, NodeInitExecutor, VmExecutor
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
@@ -65,11 +65,13 @@ class ReadOnlyPlanningService:
         secret_root: str = "/run/secrets",
         preflight_timeout_seconds: float = PREFLIGHT_TCP_TIMEOUT_SECONDS,
         executor: VmExecutor | None = None,
+        node_executor: NodeInitExecutor | None = None,
     ):
         self.store = store
         self.secret_root = secret_root
         self.preflight_timeout_seconds = preflight_timeout_seconds
         self.executor = executor
+        self.node_executor = node_executor
 
     def get_capabilities(self) -> dict[str, Any]:
         return _envelope(
@@ -87,7 +89,8 @@ class ReadOnlyPlanningService:
                 "read_only_tools": list(READ_ONLY_TOOLS),
                 "mutation_tools": list(MUTATION_TOOLS),
                 "infrastructure_side_effects": bool(
-                    self.executor is not None and self.executor.ready()
+                    (self.executor is not None and self.executor.ready())
+                    or (self.node_executor is not None and self.node_executor.ready())
                 ),
                 "plaintext_credentials_compatible": False,
                 "secret_reference_schemes": list(SECRET_REFERENCE_SCHEMES),
@@ -95,7 +98,7 @@ class ReadOnlyPlanningService:
                 "preflight_network_checks": True,
                 "preflight_authentication_attempted": False,
                 "preflight_mutates_infrastructure": False,
-                "execution_scope": ["vm"],
+                "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor)) if executor and executor.ready()],
                 "execution_backend": "ssh-control-container",
                 "execution_backend_configured": bool(
                     self.executor is not None and self.executor.ready()
@@ -366,14 +369,14 @@ class ReadOnlyPlanningService:
                     }
                 ],
             )
-        if plan["target_components"] != ["vm"]:
+        if plan["target_components"] not in (["vm"], ["node-init"]):
             return _envelope(
                 ok=False,
                 state="UNSUPPORTED_SCOPE",
                 errors=[
                     {
                         "path": "plan_id",
-                        "message": "0.5.6 accepts only a VM-only plan for start_run.",
+                        "message": "0.6.0 accepts only a VM-only or node-init-only plan for start_run.",
                     }
                 ],
             )
@@ -424,14 +427,16 @@ class ReadOnlyPlanningService:
                 ],
             )
 
-        if self.executor is None or not self.executor.ready():
+        component = plan["target_components"][0]
+        selected_executor = self.executor if component == "vm" else self.node_executor
+        if selected_executor is None or not selected_executor.ready():
             return _envelope(
                 ok=False,
                 state="EXECUTION_BACKEND_UNAVAILABLE",
                 errors=[
                     {
                         "path": "execution.control_host",
-                        "message": "The VM executor requires a mounted control_host_known_hosts file.",
+                        "message": "The component executor requires a mounted control_host_known_hosts file and packaged assets.",
                     }
                 ],
             )
@@ -452,16 +457,16 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "config_digest": config_digest,
             "preflight_id": preflight_id,
-            "target_components": ["vm"],
+            "target_components": [component],
             "created_at": created_at,
             "updated_at": created_at,
             "execution_backend": "ssh-control-container",
             "component_states": [
                 {
-                    "component": "vm",
+                    "component": component,
                     "state": "QUEUED",
                     "checkpoint": "awaiting_control_host",
-                    "message": "Approved VM execution is queued for the SSH control host.",
+                    "message": f"Approved {component} execution is queued for the SSH control host.",
                 }
             ],
         }
@@ -472,14 +477,14 @@ class ReadOnlyPlanningService:
             created_at,
             {
                 "type": "RUN_QUEUED",
-                "component": "vm",
-                "message": "Approval and preflight were accepted; VM execution was queued.",
+                "component": component,
+                "message": f"Approval and preflight were accepted; {component} execution was queued.",
             },
         )
-        self.executor.submit(
+        selected_executor.submit(
             config=config,
             run_id=run_id,
-            on_complete=self._complete_vm_run,
+            on_complete=self._complete_component_run,
         )
         return _envelope(
             ok=True,
@@ -487,7 +492,7 @@ class ReadOnlyPlanningService:
             data={"run": run, "idempotent_replay": False},
         )
 
-    def _complete_vm_run(self, result: ExecutionResult) -> None:
+    def _complete_component_run(self, result: ExecutionResult) -> None:
         run = self.store.get_run(result.run_id)
         if run is None:
             return
@@ -496,9 +501,9 @@ class ReadOnlyPlanningService:
         run["updated_at"] = now
         run["component_states"] = [
             {
-                "component": "vm",
+                "component": run["target_components"][0],
                 "state": run["state"],
-                "checkpoint": "terraform_apply" if result.succeeded else "terraform_or_control_host_failed",
+                "checkpoint": "completed" if result.succeeded else "component_or_control_host_failed",
                 "message": result.code,
                 "artifact_path": result.artifact_path,
             }
@@ -509,7 +514,7 @@ class ReadOnlyPlanningService:
             now,
             {
                 "type": result.code,
-                "component": "vm",
+                "component": run["target_components"][0],
                 "artifact_path": result.artifact_path,
             },
         )
