@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 import shlex
 from threading import Thread
@@ -9,6 +10,9 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from .secrets import DockerSecretResolver
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,11 +50,12 @@ class VmExecutor:
         *,
         config: dict[str, Any],
         run_id: str,
+        on_started: Callable[[str], None],
         on_complete: Callable[[ExecutionResult], None],
     ) -> None:
         Thread(
             target=self._run_and_report,
-            args=(config, run_id, on_complete),
+            args=(config, run_id, on_started, on_complete),
             daemon=True,
             name=f"rancher-rke2-vm-{run_id[-8:]}",
         ).start()
@@ -59,13 +64,16 @@ class VmExecutor:
         self,
         config: dict[str, Any],
         run_id: str,
+        on_started: Callable[[str], None],
         on_complete: Callable[[ExecutionResult], None],
     ) -> None:
         workspace = str(config["run"]["workspace"]).rstrip("/")
         artifact_path = f"{workspace}/runs/{run_id}/vm"
         try:
+            on_started(run_id)
             self._run(config, artifact_path)
         except Exception:
+            LOGGER.exception("VM execution failed for run %s", run_id)
             on_complete(ExecutionResult(run_id, False, "VM_EXECUTION_FAILED", artifact_path))
             return
         on_complete(ExecutionResult(run_id, True, "VM_EXECUTION_SUCCEEDED", artifact_path))
@@ -280,17 +288,21 @@ class NodeInitExecutor(VmExecutor):
 
     def submit(
         self, *, config: dict[str, Any], run_id: str,
+        on_started: Callable[[str], None],
         on_complete: Callable[[ExecutionResult], None],
     ) -> None:
-        Thread(target=self._run_and_report, args=(config, run_id, on_complete), daemon=True,
+        Thread(target=self._run_and_report, args=(config, run_id, on_started, on_complete), daemon=True,
                name=f"rancher-rke2-node-init-{run_id[-8:]}").start()
 
     def _run_and_report(self, config: dict[str, Any], run_id: str,
+                        on_started: Callable[[str], None],
                         on_complete: Callable[[ExecutionResult], None]) -> None:
         artifact_path = f"{str(config['run']['workspace']).rstrip('/')}/runs/{run_id}/node-init"
         try:
+            on_started(run_id)
             self._run_node_init(config, artifact_path)
         except Exception:
+            LOGGER.exception("Node initialization failed for run %s", run_id)
             on_complete(ExecutionResult(run_id, False, "NODE_INIT_EXECUTION_FAILED", artifact_path))
             return
         on_complete(ExecutionResult(run_id, True, "NODE_INIT_SUCCEEDED", artifact_path))

@@ -54,6 +54,14 @@ class SuccessfulExecutor(QueuedExecutor):
         callback(ExecutionResult(run_id, True, "VM_EXECUTION_SUCCEEDED", "/data/rancher/automation/runs/test/vm"))
 
 
+class RunningExecutor(QueuedExecutor):
+    def submit(self, **kwargs: object) -> None:
+        callback = kwargs["on_started"]
+        run_id = kwargs["run_id"]
+        assert callable(callback)
+        callback(run_id)
+
+
 def write_required_secrets(secret_root: Path) -> None:
     secret_root.mkdir()
     for name in (
@@ -235,6 +243,27 @@ def test_start_run_requires_current_preflight_and_is_idempotent(tmp_path: Path) 
     events = service.get_run_events(run_id)
     assert events["state"] == "EVENTS_AVAILABLE"
     assert events["data"]["events"][0]["type"] == "RUN_QUEUED"
+
+
+def test_executor_start_persists_running_state(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=RunningExecutor())
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    result = service.start_run(
+        plan_id=plan["plan_id"], config_digest=digest,
+        preflight_id=preflight["preflight_id"], approval_text=plan["approval_text"],
+        idempotency_key="running-vm-run",
+    )
+    run_id = result["data"]["run"]["run_id"]
+    stored = service.get_run(run_id)
+    assert stored["state"] == "RUNNING"
+    assert stored["data"]["run"]["component_states"][0]["checkpoint"] == "control_host_execution_started"
+    events = service.get_run_events(run_id)["data"]["events"]
+    assert [event["type"] for event in events] == ["RUN_QUEUED", "RUN_STARTED"]
 
 
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:

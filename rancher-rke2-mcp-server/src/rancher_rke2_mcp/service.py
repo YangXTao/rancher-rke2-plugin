@@ -484,12 +484,46 @@ class ReadOnlyPlanningService:
         selected_executor.submit(
             config=config,
             run_id=run_id,
+            on_started=self._mark_component_run_started,
             on_complete=self._complete_component_run,
         )
         return _envelope(
             ok=True,
             state="QUEUED",
             data={"run": run, "idempotent_replay": False},
+        )
+
+    def _mark_component_run_started(self, run_id: str) -> None:
+        """Persist the transition into the control-host executor thread.
+
+        Execution is intentionally asynchronous so an MCP request returns as soon
+        as approval has been accepted.  Without this transition an active remote
+        runner looked indistinguishable from a scheduler queue until it completed.
+        """
+        run = self.store.get_run(run_id)
+        if run is None or run["state"] != "QUEUED":
+            return
+        now = _iso(_now())
+        component = run["target_components"][0]
+        run["state"] = "RUNNING"
+        run["updated_at"] = now
+        run["component_states"] = [
+            {
+                "component": component,
+                "state": "RUNNING",
+                "checkpoint": "control_host_execution_started",
+                "message": "SSH control-host executor started; component artifacts are being prepared.",
+            }
+        ]
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run_id,
+            now,
+            {
+                "type": "RUN_STARTED",
+                "component": component,
+                "message": "SSH control-host executor started.",
+            },
         )
 
     def _complete_component_run(self, result: ExecutionResult) -> None:
