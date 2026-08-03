@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+import asyncio
+import ast
+import json
+from pathlib import Path
+import socket
+import sqlite3
+
+import httpx2
+from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
+import uvicorn
+
+from rancher_rke2_mcp.constants import READ_ONLY_TOOLS
+from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
+from rancher_rke2_mcp.server import create_http_app, create_server
+from rancher_rke2_mcp.service import ReadOnlyPlanningService
+from rancher_rke2_mcp.storage import SQLiteStore
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
+    encoding="utf-8"
+)
+
+
+def make_service(tmp_path: Path) -> ReadOnlyPlanningService:
+    return ReadOnlyPlanningService(SQLiteStore(tmp_path / "state.db"))
+
+
+def test_validates_yaml_with_secret_references(tmp_path: Path) -> None:
+    result = make_service(tmp_path).validate_config(EXAMPLE)
+    assert result["ok"] is True
+    assert result["state"] == "VALIDATED"
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "docker-secret://control_host_password" in serialized
+    assert '"password":' not in serialized
+    assert result["data"]["config_digest"].startswith("sha256:")
+
+
+def test_rejects_legacy_plaintext_credentials(tmp_path: Path) -> None:
+    legacy = EXAMPLE.replace(
+        'password_ref: "docker-secret://control_host_password"',
+        'password: "must-not-be-stored"',
+        1,
+    )
+    result = make_service(tmp_path).validate_config(legacy)
+    assert result["ok"] is False
+    assert result["state"] == "INVALID"
+    assert result["errors"][0]["path"] == "$"
+    assert "plaintext secret fields are forbidden" in result["errors"][0]["message"]
+
+
+def test_rejects_proxy_url_with_embedded_credentials(tmp_path: Path) -> None:
+    unsafe = EXAMPLE.replace(
+        'proxy_url: ""',
+        'proxy_url: "http://user:password@proxy.example:60000"',
+    )
+    result = make_service(tmp_path).validate_config(unsafe)
+    assert result["ok"] is False
+    assert "URLs containing credentials are forbidden" in json.dumps(result)
+
+
+def test_rejects_credential_url_in_extension_field(tmp_path: Path) -> None:
+    unsafe = EXAMPLE.replace(
+        "deliverables:\n",
+        'custom_endpoint: "https://user:password@example.internal/api"\n\n'
+        "deliverables:\n",
+    )
+    result = make_service(tmp_path).validate_config(unsafe)
+    assert result["ok"] is False
+    assert "URLs containing credentials are forbidden" in json.dumps(result)
+
+
+def test_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
+    result = make_service(tmp_path).validate_config("run: {}\nrun: {}\n")
+    assert result["ok"] is False
+    assert result["state"] == "INVALID"
+    assert "duplicate key" in result["errors"][0]["message"]
+
+
+def test_builds_non_executable_plan_without_secrets(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    validation = service.validate_config(EXAMPLE)
+    digest = validation["data"]["config_digest"]
+    result = service.build_plan(digest, ["all"])
+    assert result["ok"] is True
+    plan = result["data"]["plan"]
+    assert plan["read_only"] is True
+    assert plan["executable"] is False
+    assert [item["component"] for item in plan["component_plans"]] == [
+        "vm",
+        "node-init",
+        "local-rke2",
+        "rancher",
+        "downstream",
+    ]
+    serialized = json.dumps(plan, ensure_ascii=False)
+    assert "docker-secret://" not in serialized
+    assert '"password":' not in serialized
+
+
+def test_sqlite_persists_references_not_plaintext_fields(tmp_path: Path) -> None:
+    database = tmp_path / "state.db"
+    result = ReadOnlyPlanningService(SQLiteStore(database)).validate_config(EXAMPLE)
+    assert result["ok"] is True
+    store = SQLiteStore(database)
+    normalized = store.get_config(result["data"]["config_digest"])
+    assert normalized is not None
+    serialized = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+    assert "docker-secret://control_host_password" in serialized
+    assert '"password":' not in serialized
+    assert '"bootstrap_password":' not in serialized
+
+
+def test_legacy_sqlite_row_with_plaintext_secret_is_not_returned(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "state.db"
+    store = SQLiteStore(database)
+    with store._connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO validated_configs(config_digest, normalized_json, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (
+                "sha256:legacy",
+                json.dumps({"execution": {"control_host": {"password": "legacy"}}}),
+                "2026-07-31T00:00:00Z",
+            ),
+        )
+    assert store.get_config("sha256:legacy") is None
+
+
+def test_mcp_client_discovers_exactly_five_read_only_tools(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        server = create_server(tmp_path / "state.db")
+        async with Client(server) as client:
+            response = await client.list_tools()
+            names = tuple(tool.name for tool in response.tools)
+            assert set(names) == set(READ_ONLY_TOOLS)
+            assert len(names) == 5
+            capability = await client.call_tool("get_capabilities", {})
+            assert capability.structured_content["ok"] is True
+            assert capability.structured_content["data"]["mutation_tools"] == []
+            assert (
+                capability.structured_content["data"][
+                    "plaintext_credentials_compatible"
+                ]
+                is False
+            )
+            assert capability.structured_content["data"]["secrets_persisted"] is False
+
+    asyncio.run(scenario())
+
+
+def test_source_has_no_infrastructure_execution_imports() -> None:
+    forbidden = {
+        "subprocess",
+        "paramiko",
+        "ansible_runner",
+        "docker",
+        "pyVmomi",
+        "kubernetes",
+    }
+    source_root = PROJECT_ROOT / "src" / "rancher_rke2_mcp"
+    imported: set[str] = set()
+    for path in source_root.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+    assert imported.isdisjoint(forbidden)
+
+
+def test_reads_bearer_token_from_secret_file(tmp_path: Path) -> None:
+    token_file = tmp_path / "mcp_bearer_token"
+    token_file.write_text("x" * 40 + "\n", encoding="utf-8")
+    result = read_secret_setting(
+        value_env="TOKEN",
+        file_env="TOKEN_FILE",
+        environ={"TOKEN": "legacy-value", "TOKEN_FILE": str(token_file)},
+    )
+    assert result == "x" * 40
+
+
+def test_resolves_only_docker_secrets_inside_fixed_root(tmp_path: Path) -> None:
+    secret = tmp_path / "vsphere_password"
+    secret.write_text("sensitive-value\n", encoding="utf-8")
+    resolver = DockerSecretResolver(tmp_path)
+    assert resolver.resolve("docker-secret://vsphere_password") == "sensitive-value"
+
+    for unsafe in (
+        "file:///tmp/secret",
+        "docker-secret://../secret",
+        "docker-secret:///absolute",
+    ):
+        try:
+            resolver.resolve(unsafe)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe reference unexpectedly resolved: {unsafe}")
+
+
+def test_authenticated_streamable_http_end_to_end(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        token = "test-token-that-is-longer-than-32-characters"
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        mcp_server = create_server(tmp_path / "http-state.db")
+        app = create_http_app(token, mcp_server)
+        uvicorn_server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port,
+                log_level="error",
+            )
+        )
+        task = asyncio.create_task(uvicorn_server.serve())
+        try:
+            for _ in range(100):
+                if uvicorn_server.started:
+                    break
+                await asyncio.sleep(0.02)
+            assert uvicorn_server.started
+
+            url = f"http://127.0.0.1:{port}/mcp"
+            async with httpx2.AsyncClient() as unauthorized:
+                response = await unauthorized.post(url, json={})
+                assert response.status_code == 401
+
+            async with httpx2.AsyncClient(
+                headers={"Authorization": f"Bearer {token}"}
+            ) as authorized:
+                transport = streamable_http_client(url, http_client=authorized)
+                async with Client(transport, cache=None) as client:
+                    tools = await client.list_tools()
+                    assert {item.name for item in tools.tools} == set(READ_ONLY_TOOLS)
+
+                    validation_result = await client.call_tool(
+                        "validate_config",
+                        {"config": EXAMPLE},
+                    )
+                    validation = validation_result.structured_content
+                    assert validation["state"] == "VALIDATED"
+
+                    plan_result = await client.call_tool(
+                        "build_plan",
+                        {
+                            "config_digest": validation["data"]["config_digest"],
+                            "target_components": ["all"],
+                        },
+                    )
+                    plan = plan_result.structured_content
+                    assert plan["state"] == "PLANNED"
+
+                    read_result = await client.call_tool(
+                        "get_plan",
+                        {"plan_id": plan["data"]["plan"]["plan_id"]},
+                    )
+                    assert read_result.structured_content["state"] == "PLANNED"
+        finally:
+            uvicorn_server.should_exit = True
+            await asyncio.wait_for(task, timeout=10)
+
+    asyncio.run(scenario())

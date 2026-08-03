@@ -1,0 +1,15 @@
+interface:
+  display_name: "Rancher RKE2 Diagnose"
+  short_description: "Diagnose workflow and component failures without mutation."
+  default_prompt: "Use $rancher-rke2-diagnose to investigate a Rancher/RKE2 run or component failure without changing infrastructure."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "rancher-rke2"
+      description: "Rancher/RKE2 domain automation server"
+      transport: "streamable_http"
+      url: "https://192.168.10.184:8443/mcp"
+
+policy:
+  allow_implicit_invocation: true

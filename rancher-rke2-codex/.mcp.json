@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "rancher-rke2": {
+      "type": "http",
+      "url": "https://192.168.10.184:8443/mcp",
+      "bearer_token_env_var": "RANCHER_RKE2_MCP_TOKEN"
+    }
+  }
+}

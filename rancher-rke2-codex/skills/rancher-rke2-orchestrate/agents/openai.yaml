@@ -1,0 +1,15 @@
+interface:
+  display_name: "Rancher RKE2 Orchestrate"
+  short_description: "Plan, approve, run, resume, and summarize the full workflow."
+  default_prompt: "Use $rancher-rke2-orchestrate to plan or run this Rancher/RKE2 workflow through the configured MCP server."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "rancher-rke2"
+      description: "Rancher/RKE2 domain automation server"
+      transport: "streamable_http"
+      url: "https://192.168.10.184:8443/mcp"
+
+policy:
+  allow_implicit_invocation: true
