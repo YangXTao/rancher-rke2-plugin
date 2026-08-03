@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rancher-rke2-mcp-server"
-version = "0.4.0"
-description = "Secret-reference-only planning, preflight, and approval-gated run-state MCP server for Rancher and RKE2 automation."
+version = "0.5.0"
+description = "Secret-reference-only planning, preflight, and approval-gated VM execution MCP server for Rancher and RKE2 automation."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "mcp[cli]==2.0.0",
   "PyYAML==6.0.3",
+  "paramiko==3.5.1",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ rancher-rke2-mcp = "rancher_rke2_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rancher_rke2_mcp"]
+include = ["src/rancher_rke2_mcp/assets/**"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

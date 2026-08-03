@@ -189,6 +189,18 @@ class SQLiteStore:
             ).fetchone()
         return json.loads(row["run_json"]) if row else None
 
+    def update_run(self, run: dict[str, Any]) -> None:
+        payload = json.dumps(run, ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE runs
+                SET run_json = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (payload, run["updated_at"], run["run_id"]),
+            )
+
     def save_idempotency_key(
         self, idempotency_key: str, request_fingerprint: str, run_id: str
     ) -> None:

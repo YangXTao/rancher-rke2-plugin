@@ -9,6 +9,7 @@ import uvicorn
 
 from .auth import StaticBearerAuthMiddleware
 from .constants import SERVER_VERSION
+from .executor import VmExecutor
 from .secrets import read_secret_setting
 from .service import ReadOnlyPlanningService
 from .storage import SQLiteStore
@@ -28,16 +29,25 @@ def create_server(
         secret_root=str(
             secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")
         ),
+        executor=VmExecutor(
+            secret_root=str(
+                secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")
+            ),
+            known_hosts_path=os.environ.get(
+                "RANCHER_RKE2_CONTROL_KNOWN_HOSTS",
+                "/run/secrets/control_host_known_hosts",
+            ),
+        ),
     )
     server = MCPServer(
         name="rancher-rke2",
-        title="Rancher/RKE2 Planner and Approval Gate",
-        description="Validates YAML, creates plans, performs non-mutating preflight checks, and persists approval-gated run state.",
+        title="Rancher/RKE2 VM Executor",
+        description="Validates YAML, creates plans, performs non-mutating preflight checks, and executes approved VM-only plans through the SSH control host.",
         instructions=(
             "Preflight resolves only Secret availability and TCP reachability. "
             "start_run accepts only a VM-only plan with an exact approval and matching "
-            "PASSED preflight. Version 0.4.0 has no execution backend and never "
-            "authenticates or changes infrastructure."
+            "PASSED preflight. Version 0.5.0 uses strict known-host SSH verification "
+            "and executes Terraform only inside the declared control container."
         ),
         version=SERVER_VERSION,
     )
@@ -62,7 +72,7 @@ def create_server(
         config_digest: str,
         target_components: list[str],
     ) -> dict[str, Any]:
-        """Create and persist a non-executable deployment plan."""
+        """Create and persist a deployment plan; only a VM-only plan is executable."""
         return service.build_plan(config_digest, target_components)
 
     @server.tool()
@@ -88,7 +98,7 @@ def create_server(
         approval_text: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        """Persist a VM-only approval-gated run request; 0.4.0 never executes infrastructure."""
+        """Queue an approved VM-only execution through the SSH control host."""
         return service.start_run(
             plan_id=plan_id,
             config_digest=config_digest,

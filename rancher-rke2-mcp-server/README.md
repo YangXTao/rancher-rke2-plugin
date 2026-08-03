@@ -1,4 +1,19 @@
-# Rancher/RKE2 MCP Server 0.4.0
+# Rancher/RKE2 MCP Server 0.5.0
+
+## 0.5.0 VM execution
+
+`start_run` now executes a VM-only plan after the existing digest, preflight,
+approval-text, and idempotency checks. It connects to `execution.control_host` with
+password authentication only after validating its SSH host key against the mounted
+`secrets/control_host_known_hosts` file. It uploads a Terraform VM bundle to the
+configured persistent workspace, creates or reuses the configured control container
+without mounting the host Docker socket, runs the ping-only IP conflict check, then
+runs `terraform init` and `terraform apply` inside that container.
+
+The server stores only run state and artifact paths. Secret values are resolved from
+Docker Secrets at execution time and are never returned through MCP, stored in
+SQLite, or added to run events. Terraform state and protected execution logs remain
+on the control host under `<workspace>/runs/<run_id>/vm`.
 
 ## 0.4.0 approval-gated run state
 

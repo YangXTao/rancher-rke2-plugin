@@ -151,8 +151,8 @@ class RegistryConfig(ExtensibleModel):
 
 
 class VersionsConfig(ExtensibleModel):
-    terraform: str = Field(min_length=1)
-    vsphere_provider: str = Field(min_length=1)
+    terraform: str = Field(min_length=1, pattern=r"^[0-9][0-9A-Za-z._+-]*$")
+    vsphere_provider: str = Field(min_length=1, pattern=r"^[0-9][0-9A-Za-z._+~<>= -]*$")
     rke2_management: str = Field(min_length=1)
     rancher: str = Field(min_length=1)
     rancher2_provider: str = Field(min_length=1)

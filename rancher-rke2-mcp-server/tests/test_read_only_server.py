@@ -14,6 +14,7 @@ from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
 from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
+from rancher_rke2_mcp.executor import ExecutionResult
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
@@ -27,12 +28,29 @@ EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
 
 
 def make_service(
-    tmp_path: Path, *, secret_root: Path | None = None
+    tmp_path: Path, *, secret_root: Path | None = None, executor=None
 ) -> ReadOnlyPlanningService:
     return ReadOnlyPlanningService(
         SQLiteStore(tmp_path / "state.db"),
         secret_root=str(secret_root or tmp_path / "secrets"),
+        executor=executor,
     )
+
+
+class QueuedExecutor:
+    def ready(self) -> bool:
+        return True
+
+    def submit(self, **_: object) -> None:
+        return None
+
+
+class SuccessfulExecutor(QueuedExecutor):
+    def submit(self, **kwargs: object) -> None:
+        callback = kwargs["on_complete"]
+        run_id = kwargs["run_id"]
+        assert callable(callback)
+        callback(ExecutionResult(run_id, True, "VM_EXECUTION_SUCCEEDED", "/data/rancher/automation/runs/test/vm"))
 
 
 def write_required_secrets(secret_root: Path) -> None:
@@ -44,6 +62,10 @@ def write_required_secrets(secret_root: Path) -> None:
         "rancher_bootstrap_password",
     ):
         (secret_root / name).write_text(f"{name}-value\n", encoding="utf-8")
+    (secret_root / "control_host_known_hosts").write_text(
+        "control.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestOnly\n",
+        encoding="utf-8",
+    )
 
 
 def test_validates_yaml_with_secret_references(tmp_path: Path) -> None:
@@ -179,7 +201,7 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
 def test_start_run_requires_current_preflight_and_is_idempotent(tmp_path: Path) -> None:
     secret_root = tmp_path / "secrets"
     write_required_secrets(secret_root)
-    service = make_service(tmp_path, secret_root=secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=QueuedExecutor())
     validation = service.validate_config(EXAMPLE)
     digest = validation["data"]["config_digest"]
     plan = service.build_plan(digest, ["vm"])["data"]["plan"]
@@ -195,7 +217,7 @@ def test_start_run_requires_current_preflight_and_is_idempotent(tmp_path: Path) 
         idempotency_key="vm-run-001",
     )
     assert first["ok"] is True
-    assert first["state"] == "BLOCKED"
+    assert first["state"] == "QUEUED"
     run_id = first["data"]["run"]["run_id"]
 
     replay = service.start_run(
@@ -210,13 +232,13 @@ def test_start_run_requires_current_preflight_and_is_idempotent(tmp_path: Path) 
 
     events = service.get_run_events(run_id)
     assert events["state"] == "EVENTS_AVAILABLE"
-    assert events["data"]["events"][0]["type"] == "RUN_BLOCKED"
+    assert events["data"]["events"][0]["type"] == "RUN_QUEUED"
 
 
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:
     secret_root = tmp_path / "secrets"
     write_required_secrets(secret_root)
-    service = make_service(tmp_path, secret_root=secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=QueuedExecutor())
     validation = service.validate_config(EXAMPLE)
     digest = validation["data"]["config_digest"]
     plan = service.build_plan(digest, ["all"])["data"]["plan"]
@@ -315,10 +337,9 @@ def test_preflight_reports_unmounted_secret_without_returning_reference_value(
     )
 
 
-def test_source_has_no_infrastructure_execution_imports() -> None:
+def test_only_the_vm_executor_may_import_ssh_client() -> None:
     forbidden = {
         "subprocess",
-        "paramiko",
         "ansible_runner",
         "docker",
         "pyVmomi",
@@ -327,6 +348,8 @@ def test_source_has_no_infrastructure_execution_imports() -> None:
     source_root = PROJECT_ROOT / "src" / "rancher_rke2_mcp"
     imported: set[str] = set()
     for path in source_root.glob("*.py"):
+        if path.name == "executor.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -334,6 +357,24 @@ def test_source_has_no_infrastructure_execution_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
     assert imported.isdisjoint(forbidden)
+
+
+def test_successful_executor_persists_vm_result(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=SuccessfulExecutor())
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    result = service.start_run(
+        plan_id=plan["plan_id"], config_digest=digest,
+        preflight_id=preflight["preflight_id"], approval_text=plan["approval_text"],
+        idempotency_key="successful-vm-run",
+    )
+    stored = service.get_run(result["data"]["run"]["run_id"])
+    assert stored["state"] == "SUCCEEDED"
+    assert stored["data"]["run"]["component_states"][0]["artifact_path"].endswith("/vm")
 
 
 def test_reads_bearer_token_from_secret_file(tmp_path: Path) -> None:

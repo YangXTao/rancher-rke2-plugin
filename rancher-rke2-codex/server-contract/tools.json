@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.4.0",
+  "contract_version": "0.5.0",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -48,7 +48,7 @@
       "name": "start_run",
       "mutation": true,
       "required": ["plan_id", "config_digest", "preflight_id", "approval_text", "idempotency_key"],
-      "purpose": "Validate VM-only approval gates and persist a blocked run. Version 0.4.0 has no infrastructure execution backend."
+      "purpose": "Validate VM-only approval gates, then queue Terraform execution on the strict-known-host SSH control host."
     },
     {
       "name": "get_run",
@@ -124,6 +124,8 @@
     "server_side_idempotency_required_for_mutations": true,
     "preflight_before_mutation_required": true,
     "preflight_performs_authentication": false,
-    "preflight_changes_infrastructure": false
+    "preflight_changes_infrastructure": false,
+    "vm_execution_scope": ["vm"],
+    "control_host_known_hosts_required": true
   }
 }

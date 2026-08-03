@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 import socket
 from typing import Any
 from urllib.parse import urlsplit
@@ -51,6 +52,8 @@ class NonMutatingPreflight:
     ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         checks.extend(self._secret_checks(config))
+        if "vm" in planned_components:
+            checks.append(self._known_hosts_check())
         checks.extend(
             self._connectivity_checks(
                 config,
@@ -58,6 +61,23 @@ class NonMutatingPreflight:
             )
         )
         return checks
+
+    def _known_hosts_check(self) -> dict[str, Any]:
+        path = Path(self.resolver.root) / "control_host_known_hosts"
+        try:
+            available = path.is_file() and bool(path.read_text(encoding="utf-8").strip())
+        except OSError:
+            available = False
+        return self._check(
+            name="ssh.control_host_known_hosts",
+            category="ssh_host_key",
+            status="PASSED" if available else "FAILED",
+            message=(
+                "A non-empty control-host known_hosts file is mounted."
+                if available
+                else "VM execution requires a non-empty mounted control_host_known_hosts file."
+            ),
+        )
 
     def _secret_checks(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         references: list[tuple[str, str | None]] = [

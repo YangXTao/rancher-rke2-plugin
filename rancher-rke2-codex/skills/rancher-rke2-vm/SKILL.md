@@ -20,10 +20,11 @@ apply only when their named tools are available.
 2. Build a plan with `target_components: ["vm"]`.
 3. Present the server's redacted VM inventory, IP-conflict findings, Provider/cache
    requirements, and planned creates or updates.
-4. In server 0.4.0, obtain the exact plan approval, then call `start_run` with the
-   matching `preflight_id` and a stable idempotency key. It records an approval-gated
-   run but returns `BLOCKED` until a future server-side executor is implemented.
-5. Verify with `get_run`; never infer VM creation from an approval or a blocked run.
+4. In server 0.5.0, show the exact plan approval text and explain that this invokes
+   Terraform against vCenter. Only after explicit user approval, call `start_run`
+   with the matching `preflight_id` and a stable idempotency key.
+5. Track `QUEUED`, then `SUCCEEDED` or `FAILED` with `get_run` and `get_run_events`.
+   Do not infer VM creation merely from a queued run; require `SUCCEEDED`.
 
 Planning, validation, inventory, and status requests are read-only.
 

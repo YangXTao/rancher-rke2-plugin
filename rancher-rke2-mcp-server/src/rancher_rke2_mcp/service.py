@@ -19,6 +19,7 @@ from .constants import (
     SERVER_VERSION,
 )
 from .preflight import NonMutatingPreflight
+from .executor import ExecutionResult, VmExecutor
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
@@ -58,10 +59,12 @@ class ReadOnlyPlanningService:
         *,
         secret_root: str = "/run/secrets",
         preflight_timeout_seconds: float = PREFLIGHT_TCP_TIMEOUT_SECONDS,
+        executor: VmExecutor | None = None,
     ):
         self.store = store
         self.secret_root = secret_root
         self.preflight_timeout_seconds = preflight_timeout_seconds
+        self.executor = executor
 
     def get_capabilities(self) -> dict[str, Any]:
         return _envelope(
@@ -78,7 +81,9 @@ class ReadOnlyPlanningService:
                 "modes": ["online", "offline"],
                 "read_only_tools": list(READ_ONLY_TOOLS),
                 "mutation_tools": list(MUTATION_TOOLS),
-                "infrastructure_side_effects": False,
+                "infrastructure_side_effects": bool(
+                    self.executor is not None and self.executor.ready()
+                ),
                 "plaintext_credentials_compatible": False,
                 "secret_reference_schemes": list(SECRET_REFERENCE_SCHEMES),
                 "secrets_persisted": False,
@@ -86,8 +91,10 @@ class ReadOnlyPlanningService:
                 "preflight_authentication_attempted": False,
                 "preflight_mutates_infrastructure": False,
                 "execution_scope": ["vm"],
-                "execution_backend": "not-configured",
-                "execution_backend_configured": False,
+                "execution_backend": "ssh-control-container",
+                "execution_backend_configured": bool(
+                    self.executor is not None and self.executor.ready()
+                ),
                 "transport_security_required": True,
             },
         )
@@ -165,7 +172,7 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "state": "PLANNED",
             "read_only": True,
-            "executable": False,
+            "executable": components == ["vm"],
             "config_digest": config_digest,
             "target_components": components,
             "created_at": _iso(created),
@@ -290,13 +297,7 @@ class ReadOnlyPlanningService:
         approval_text: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        """Persist an approval-gated VM execution request without a backend action.
-
-        Version 0.4.0 deliberately owns the approval and durable-run state machine
-        before any remote executor is connected. The returned BLOCKED state is
-        explicit: no SSH, Terraform, vSphere API, or other infrastructure action is
-        attempted by this release.
-        """
+        """Queue one approval-gated VM-only execution on the SSH control host."""
         request_fingerprint = self._request_fingerprint(
             plan_id, config_digest, preflight_id, approval_text
         )
@@ -367,7 +368,7 @@ class ReadOnlyPlanningService:
                 errors=[
                     {
                         "path": "plan_id",
-                        "message": "0.4.0 accepts only a VM-only plan for start_run.",
+                        "message": "0.5.0 accepts only a VM-only plan for start_run.",
                     }
                 ],
             )
@@ -418,24 +419,43 @@ class ReadOnlyPlanningService:
                 ],
             )
 
+        if self.executor is None or not self.executor.ready():
+            return _envelope(
+                ok=False,
+                state="EXECUTION_BACKEND_UNAVAILABLE",
+                errors=[
+                    {
+                        "path": "execution.control_host",
+                        "message": "The VM executor requires a mounted control_host_known_hosts file.",
+                    }
+                ],
+            )
+
+        config = self.store.get_config(config_digest)
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "config_digest", "message": "Configuration is unavailable."}],
+            )
         created_at = _iso(_now())
         run_id = "run-" + uuid4().hex
         run = {
             "run_id": run_id,
-            "state": "BLOCKED",
+            "state": "QUEUED",
             "plan_id": plan_id,
             "config_digest": config_digest,
             "preflight_id": preflight_id,
             "target_components": ["vm"],
             "created_at": created_at,
             "updated_at": created_at,
-            "execution_backend": "not-configured",
+            "execution_backend": "ssh-control-container",
             "component_states": [
                 {
                     "component": "vm",
-                    "state": "BLOCKED",
-                    "checkpoint": "awaiting_execution_backend",
-                    "message": "No server-side execution backend is configured in 0.4.0.",
+                    "state": "QUEUED",
+                    "checkpoint": "awaiting_control_host",
+                    "message": "Approved VM execution is queued for the SSH control host.",
                 }
             ],
         }
@@ -445,18 +465,47 @@ class ReadOnlyPlanningService:
             run_id,
             created_at,
             {
-                "type": "RUN_BLOCKED",
+                "type": "RUN_QUEUED",
                 "component": "vm",
-                "message": "Approval and preflight were accepted; no execution backend is configured.",
+                "message": "Approval and preflight were accepted; VM execution was queued.",
             },
+        )
+        self.executor.submit(
+            config=config,
+            run_id=run_id,
+            on_complete=self._complete_vm_run,
         )
         return _envelope(
             ok=True,
-            state="BLOCKED",
+            state="QUEUED",
             data={"run": run, "idempotent_replay": False},
-            warnings=[
-                "0.4.0 records approval-gated run state only; it does not execute SSH, Terraform, Ansible, or vSphere operations."
-            ],
+        )
+
+    def _complete_vm_run(self, result: ExecutionResult) -> None:
+        run = self.store.get_run(result.run_id)
+        if run is None:
+            return
+        now = _iso(_now())
+        run["state"] = "SUCCEEDED" if result.succeeded else "FAILED"
+        run["updated_at"] = now
+        run["component_states"] = [
+            {
+                "component": "vm",
+                "state": run["state"],
+                "checkpoint": "terraform_apply" if result.succeeded else "terraform_or_control_host_failed",
+                "message": result.code,
+                "artifact_path": result.artifact_path,
+            }
+        ]
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run["run_id"],
+            now,
+            {
+                "type": result.code,
+                "component": "vm",
+                "artifact_path": result.artifact_path,
+            },
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
