@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import socket
 import sqlite3
+import time
 from unittest.mock import patch
 
 import httpx2
@@ -29,12 +30,13 @@ EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
 
 
 def make_service(
-    tmp_path: Path, *, secret_root: Path | None = None, executor=None
+    tmp_path: Path, *, secret_root: Path | None = None, executor=None, node_executor=None
 ) -> ReadOnlyPlanningService:
     return ReadOnlyPlanningService(
         SQLiteStore(tmp_path / "state.db"),
         secret_root=str(secret_root or tmp_path / "secrets"),
         executor=executor,
+        node_executor=node_executor,
     )
 
 
@@ -60,6 +62,14 @@ class RunningExecutor(QueuedExecutor):
         run_id = kwargs["run_id"]
         assert callable(callback)
         callback(run_id)
+
+
+class WorkflowExecutor(QueuedExecutor):
+    def __init__(self) -> None:
+        self.artifact_paths: list[str] = []
+
+    def execute(self, _config: object, artifact_path: str) -> None:
+        self.artifact_paths.append(artifact_path)
 
 
 def write_required_secrets(secret_root: Path) -> None:
@@ -189,11 +199,11 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
             assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
-            assert len(names) == 10
+            assert len(names) == 11
             capability = await client.call_tool("get_capabilities", {})
             assert capability.structured_content["ok"] is True
             assert capability.structured_content["data"]["mutation_tools"] == [
-                "start_run"
+                "start_run", "start_workflow"
             ]
             assert (
                 capability.structured_content["data"][
@@ -264,6 +274,45 @@ def test_executor_start_persists_running_state(tmp_path: Path) -> None:
     assert stored["data"]["run"]["component_states"][0]["checkpoint"] == "control_host_execution_started"
     events = service.get_run_events(run_id)["data"]["events"]
     assert [event["type"] for event in events] == ["RUN_QUEUED", "RUN_STARTED"]
+
+
+def test_workflow_runs_vm_then_node_init_after_one_approval(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm", "node-init"])["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["approval_text"] == f"APPROVE WORKFLOW {plan['plan_id']}"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="vm-node-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [item["state"] for item in stored["data"]["run"]["component_states"]] == [
+        "SUCCEEDED", "SUCCEEDED"
+    ]
+    assert vm_executor.artifact_paths[0].endswith("/vm")
+    assert node_executor.artifact_paths[0].endswith("/node-init")
 
 
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:

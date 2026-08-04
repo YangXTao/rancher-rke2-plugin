@@ -45,13 +45,14 @@ def create_server(
     )
     server = MCPServer(
         name="rancher-rke2",
-        title="Rancher/RKE2 VM Executor",
-        description="Validates YAML, creates plans, performs non-mutating preflight checks, and executes approved VM-only plans through the SSH control host.",
+        title="Rancher/RKE2 Workflow Executor",
+        description="Validates YAML, creates plans, performs non-mutating preflight checks, and executes approved components or the VM-to-node-init workflow through the SSH control host.",
         instructions=(
             "Preflight resolves only Secret availability and TCP reachability. "
-            "start_run accepts only a VM-only plan with an exact approval and matching "
-            "PASSED preflight. Version 0.5.6 uses strict known-host SSH verification "
-            "and executes Terraform only inside the declared control container."
+            "start_run accepts one component plan with exact approval. start_workflow "
+            "accepts exactly the ordered VM-to-node-init plan with one workflow approval, "
+            "then waits for node TCP/22 readiness between stages. Both use strict "
+            "known-host SSH verification and the declared control container."
         ),
         version=SERVER_VERSION,
     )
@@ -76,7 +77,7 @@ def create_server(
         config_digest: str,
         target_components: list[str],
     ) -> dict[str, Any]:
-        """Create and persist a deployment plan; only a VM-only plan is executable."""
+        """Create and persist a deployment plan; supported component and workflow plans are executable."""
         return service.build_plan(config_digest, target_components)
 
     @server.tool()
@@ -102,8 +103,25 @@ def create_server(
         approval_text: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        """Queue an approved VM-only execution through the SSH control host."""
+        """Queue one approved component execution through the SSH control host."""
         return service.start_run(
+            plan_id=plan_id,
+            config_digest=config_digest,
+            preflight_id=preflight_id,
+            approval_text=approval_text,
+            idempotency_key=idempotency_key,
+        )
+
+    @server.tool()
+    def start_workflow(
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+        approval_text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Queue one approved VM-to-node-init workflow with an internal readiness gate."""
+        return service.start_workflow(
             plan_id=plan_id,
             config_digest=config_digest,
             preflight_id=preflight_id,

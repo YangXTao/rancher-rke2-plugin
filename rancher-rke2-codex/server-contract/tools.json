@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.6.2",
+  "contract_version": "0.7.0",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -48,7 +48,13 @@
       "name": "start_run",
       "mutation": true,
       "required": ["plan_id", "config_digest", "preflight_id", "approval_text", "idempotency_key"],
-      "purpose": "Validate VM-only approval gates, then queue Terraform execution on the strict-known-host SSH control host."
+      "purpose": "Validate one component-plan approval gate, then queue its supported executor on the strict-known-host SSH control host."
+    },
+    {
+      "name": "start_workflow",
+      "mutation": true,
+      "required": ["plan_id", "config_digest", "preflight_id", "approval_text", "idempotency_key"],
+      "purpose": "Validate one exact VM-to-node-init workflow approval, create VMs, wait for every node TCP/22 readiness, then initialize nodes. Stops on failure and never retries automatically."
     },
     {
       "name": "get_run",
@@ -125,7 +131,8 @@
     "preflight_before_mutation_required": true,
     "preflight_performs_authentication": false,
     "preflight_changes_infrastructure": false,
-    "vm_execution_scope": ["vm"],
+    "component_execution_scope": ["vm", "node-init"],
+    "workflow_execution_scope": ["vm", "node-init"],
     "control_host_known_hosts_required": true
   }
 }

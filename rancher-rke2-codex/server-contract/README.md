@@ -10,7 +10,7 @@ Preflight can resolve mounted Secret availability and test TCP reachability only
 It does not authenticate against SSH, vCenter, registry, or proxy services, and it
 does not make any infrastructure change.
 
-`start_run` is a server-side mutation gate: it accepts only a VM-only plan, exact
+`start_run` is a server-side mutation gate: it accepts one supported component plan, exact
 plan approval text, matching digest, and a current `PASSED` preflight. It records
 durable state with idempotency protection. In 0.4.0 the result is intentionally
 `BLOCKED`, because no infrastructure execution backend has been introduced.

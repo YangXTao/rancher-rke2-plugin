@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
+from threading import Thread
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +26,11 @@ from .executor import ExecutionResult, NodeInitExecutor, VmExecutor
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
+
+
+LOGGER = logging.getLogger(__name__)
+WORKFLOW_NODE_READY_TIMEOUT_SECONDS = 300
+WORKFLOW_NODE_READY_POLL_SECONDS = 5
 
 
 def _now() -> datetime:
@@ -99,6 +107,9 @@ class ReadOnlyPlanningService:
                 "preflight_authentication_attempted": False,
                 "preflight_mutates_infrastructure": False,
                 "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor)) if executor and executor.ready()],
+                "workflow_execution_scope": ["vm", "node-init"]
+                if self._workflow_ready()
+                else [],
                 "execution_backend": "ssh-control-container",
                 "execution_backend_configured": bool(
                     self.executor is not None and self.executor.ready()
@@ -180,7 +191,8 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "state": "PLANNED",
             "read_only": True,
-            "executable": components in (["vm"], ["node-init"]),
+            "executable": components in (["vm"], ["node-init"], ["vm", "node-init"]),
+            "execution_mode": "WORKFLOW" if components == ["vm", "node-init"] else "COMPONENT",
             "config_digest": config_digest,
             "target_components": components,
             "created_at": _iso(created),
@@ -197,7 +209,11 @@ class ReadOnlyPlanningService:
                 "在计划有效期内可调用 preflight_plan 执行非变更前置检查。",
                 "SQLite 只保存 Secret 引用；真实凭据不进入配置摘要或计划。",
             ],
-            "approval_text": f"APPROVE PLAN {plan_id}",
+            "approval_text": (
+                f"APPROVE WORKFLOW {plan_id}"
+                if components == ["vm", "node-init"]
+                else f"APPROVE PLAN {plan_id}"
+            ),
         }
         plan["plan_digest"] = self._plan_digest(plan)
         self.store.save_plan(plan)
@@ -296,6 +312,140 @@ class ReadOnlyPlanningService:
             ok=state == "PASSED", state=state, data={"preflight": preflight}
         )
 
+    def start_workflow(
+        self,
+        *,
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+        approval_text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Start one approval-gated VM-to-node-init workflow.
+
+        The only supported workflow scope is deliberately narrow: the two
+        components that have individually proven execution backends.  The worker
+        itself enforces ordering and performs a fresh node readiness gate after
+        Terraform finishes; it never invokes the later RKE2/Rancher stages.
+        """
+        request_fingerprint = self._request_fingerprint(
+            "workflow", plan_id, config_digest, preflight_id, approval_text
+        )
+        existing = self.store.get_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing["request_fingerprint"] != request_fingerprint:
+                return _envelope(
+                    ok=False,
+                    state="IDEMPOTENCY_CONFLICT",
+                    errors=[{
+                        "path": "idempotency_key",
+                        "message": "This key was already used for a different request.",
+                    }],
+                )
+            run = self.store.get_run(existing["run_id"])
+            if run is None:
+                return _envelope(
+                    ok=False,
+                    state="INTERNAL_ERROR",
+                    errors=[{
+                        "path": "idempotency_key",
+                        "message": "The persisted idempotent workflow is unavailable.",
+                    }],
+                )
+            return _envelope(
+                ok=True,
+                state=run["state"],
+                data={"run": run, "idempotent_replay": True},
+            )
+
+        plan, preflight, config, error = self._validated_execution_inputs(
+            plan_id=plan_id,
+            config_digest=config_digest,
+            preflight_id=preflight_id,
+        )
+        if error is not None:
+            return error
+        assert plan is not None and preflight is not None and config is not None
+        if plan["target_components"] != ["vm", "node-init"]:
+            return _envelope(
+                ok=False,
+                state="UNSUPPORTED_SCOPE",
+                errors=[{
+                    "path": "plan_id",
+                    "message": "start_workflow accepts exactly the ordered [vm, node-init] plan.",
+                }],
+            )
+        if approval_text != plan["approval_text"]:
+            return _envelope(
+                ok=False,
+                state="APPROVAL_REQUIRED",
+                errors=[{
+                    "path": "approval_text",
+                    "message": "Approval text must exactly match the workflow approval text.",
+                }],
+            )
+        if not self._workflow_ready():
+            return _envelope(
+                ok=False,
+                state="EXECUTION_BACKEND_UNAVAILABLE",
+                errors=[{
+                    "path": "execution.control_host",
+                    "message": "Both VM and node-init executors require mounted known_hosts and packaged assets.",
+                }],
+            )
+
+        created = _now()
+        run_id = _run_id(created)
+        created_at = _iso(created)
+        run = {
+            "run_id": run_id,
+            "state": "QUEUED",
+            "workflow": True,
+            "plan_id": plan_id,
+            "config_digest": config_digest,
+            "preflight_id": preflight_id,
+            "target_components": ["vm", "node-init"],
+            "created_at": created_at,
+            "updated_at": created_at,
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {
+                    "component": "vm",
+                    "state": "QUEUED",
+                    "checkpoint": "awaiting_control_host",
+                    "message": "Approved workflow is queued to create VMs.",
+                },
+                {
+                    "component": "node-init",
+                    "state": "BLOCKED",
+                    "checkpoint": "waiting_for_vm",
+                    "message": "Waiting for the VM component to succeed.",
+                },
+            ],
+        }
+        self.store.save_run(run)
+        self.store.save_idempotency_key(idempotency_key, request_fingerprint, run_id)
+        self.store.append_run_event(
+            run_id,
+            created_at,
+            {
+                "type": "WORKFLOW_QUEUED",
+                "message": "Workflow approval and initial preflight were accepted.",
+                "components": ["vm", "node-init"],
+            },
+        )
+        Thread(
+            target=self._run_vm_node_workflow,
+            args=(config, run_id),
+            daemon=True,
+            name=f"rancher-rke2-workflow-{run_id[-8:]}",
+        ).start()
+        return _envelope(
+            ok=True,
+            state="QUEUED",
+            data={"run": run, "idempotent_replay": False},
+        )
+
     def start_run(
         self,
         *,
@@ -305,7 +455,7 @@ class ReadOnlyPlanningService:
         approval_text: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        """Queue one approval-gated VM-only execution on the SSH control host."""
+        """Queue one approval-gated component execution on the SSH control host."""
         request_fingerprint = self._request_fingerprint(
             plan_id, config_digest, preflight_id, approval_text
         )
@@ -376,7 +526,7 @@ class ReadOnlyPlanningService:
                 errors=[
                     {
                         "path": "plan_id",
-                        "message": "0.6.0 accepts only a VM-only or node-init-only plan for start_run.",
+                        "message": "start_run accepts only a VM-only or node-init-only plan; use start_workflow for [vm, node-init].",
                     }
                 ],
             )
@@ -491,6 +641,248 @@ class ReadOnlyPlanningService:
             ok=True,
             state="QUEUED",
             data={"run": run, "idempotent_replay": False},
+        )
+
+    def _workflow_ready(self) -> bool:
+        return bool(
+            self.executor is not None
+            and self.executor.ready()
+            and self.node_executor is not None
+            and self.node_executor.ready()
+        )
+
+    def _validated_execution_inputs(
+        self,
+        *,
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return None, None, None, _envelope(
+                ok=False, state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        if plan["config_digest"] != config_digest:
+            return None, None, None, _envelope(
+                ok=False, state="CONFIG_MISMATCH",
+                errors=[{
+                    "path": "config_digest",
+                    "message": "The supplied digest does not match the plan.",
+                }],
+            )
+        if datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00")) <= _now():
+            return None, None, None, _envelope(
+                ok=False, state="EXPIRED",
+                errors=[{
+                    "path": "plan_id",
+                    "message": "Plan has expired; validate, plan, and preflight again.",
+                }],
+            )
+        preflight = self.store.get_preflight(preflight_id)
+        if preflight is None:
+            return None, None, None, _envelope(
+                ok=False, state="NOT_FOUND",
+                errors=[{"path": "preflight_id", "message": "Unknown preflight ID."}],
+            )
+        if preflight["plan_id"] != plan_id or preflight["config_digest"] != config_digest:
+            return None, None, None, _envelope(
+                ok=False, state="PREFLIGHT_MISMATCH",
+                errors=[{
+                    "path": "preflight_id",
+                    "message": "Preflight does not belong to the selected plan and configuration.",
+                }],
+            )
+        if preflight["state"] != "PASSED" or datetime.fromisoformat(
+            preflight["expires_at"].replace("Z", "+00:00")
+        ) <= _now():
+            return None, None, None, _envelope(
+                ok=False, state="PREFLIGHT_REQUIRED",
+                errors=[{
+                    "path": "preflight_id",
+                    "message": "A current PASSED preflight is required before starting a run.",
+                }],
+            )
+        config = self.store.get_config(config_digest)
+        if config is None:
+            return None, None, None, _envelope(
+                ok=False, state="NOT_FOUND",
+                errors=[{
+                    "path": "config_digest",
+                    "message": "Configuration is unavailable.",
+                }],
+            )
+        return plan, preflight, config, None
+
+    def _run_vm_node_workflow(self, config: dict[str, Any], run_id: str) -> None:
+        workspace = str(config["run"]["workspace"]).rstrip("/")
+        vm_artifact = f"{workspace}/runs/{run_id}/vm"
+        node_artifact = f"{workspace}/runs/{run_id}/node-init"
+        self._set_workflow_component(
+            run_id, "vm", "RUNNING", "control_host_execution_started",
+            "SSH control-host executor started for VM creation.", "WORKFLOW_STARTED",
+        )
+        try:
+            assert self.executor is not None
+            self.executor.execute(config, vm_artifact)
+        except Exception:
+            LOGGER.exception("Workflow VM component failed for run %s", run_id)
+            self._finish_workflow_failure(
+                run_id, "vm", "VM_EXECUTION_FAILED", vm_artifact,
+                "VM creation failed; node initialization was not started.",
+            )
+            return
+
+        self._set_workflow_component(
+            run_id, "vm", "SUCCEEDED", "completed", "VM_EXECUTION_SUCCEEDED",
+            "VM_EXECUTION_SUCCEEDED", artifact_path=vm_artifact,
+        )
+        self._set_workflow_component(
+            run_id, "node-init", "WAITING", "waiting_for_node_ssh",
+            "Waiting for every newly-created node to accept TCP/22.",
+            "WORKFLOW_NODE_READINESS_WAIT",
+        )
+        try:
+            ready = self._wait_for_workflow_nodes(config)
+        except Exception:
+            LOGGER.exception("Workflow node readiness check failed for run %s", run_id)
+            self._finish_workflow_failure(
+                run_id, "node-init", "NODE_READINESS_CHECK_FAILED", node_artifact,
+                "The node readiness gate could not complete after VM creation.",
+            )
+            return
+        if not ready:
+            self._finish_workflow_failure(
+                run_id, "node-init", "NODE_SSH_NOT_READY", node_artifact,
+                "Node TCP/22 readiness did not pass before the workflow timeout.",
+            )
+            return
+
+        self._set_workflow_component(
+            run_id, "node-init", "RUNNING", "control_host_execution_started",
+            "All nodes passed TCP/22 readiness; node initialization started.",
+            "WORKFLOW_NODE_READINESS_PASSED",
+        )
+        try:
+            assert self.node_executor is not None
+            self.node_executor.execute(config, node_artifact)
+        except Exception:
+            LOGGER.exception("Workflow node-init component failed for run %s", run_id)
+            self._finish_workflow_failure(
+                run_id, "node-init", "NODE_INIT_EXECUTION_FAILED", node_artifact,
+                "Node initialization failed after VM creation.",
+            )
+            return
+
+        self._set_workflow_component(
+            run_id, "node-init", "SUCCEEDED", "completed", "NODE_INIT_SUCCEEDED",
+            "NODE_INIT_SUCCEEDED", artifact_path=node_artifact,
+        )
+        run = self.store.get_run(run_id)
+        if run is None:
+            return
+        now = _iso(_now())
+        run["state"] = "SUCCEEDED"
+        run["updated_at"] = now
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run_id, now,
+            {
+                "type": "WORKFLOW_SUCCEEDED",
+                "components": ["vm", "node-init"],
+                "artifact_paths": [vm_artifact, node_artifact],
+            },
+        )
+
+    def _wait_for_workflow_nodes(self, config: dict[str, Any]) -> bool:
+        deadline = time.monotonic() + WORKFLOW_NODE_READY_TIMEOUT_SECONDS
+        while True:
+            checks = NonMutatingPreflight(
+                DockerSecretResolver(self.secret_root),
+                timeout_seconds=self.preflight_timeout_seconds,
+            ).run(config, planned_components=["node-init"])
+            node_checks = [item for item in checks if item["name"].startswith("tcp.node_ssh.")]
+            if node_checks and all(item["status"] == "PASSED" for item in node_checks):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(WORKFLOW_NODE_READY_POLL_SECONDS)
+
+    def _set_workflow_component(
+        self,
+        run_id: str,
+        component: str,
+        state: str,
+        checkpoint: str,
+        message: str,
+        event_type: str,
+        *,
+        artifact_path: str | None = None,
+    ) -> None:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return
+        now = _iso(_now())
+        states = {item["component"]: dict(item) for item in run["component_states"]}
+        state_item = {
+            "component": component,
+            "state": state,
+            "checkpoint": checkpoint,
+            "message": message,
+        }
+        if artifact_path is not None:
+            state_item["artifact_path"] = artifact_path
+        states[component] = state_item
+        run["state"] = "RUNNING"
+        run["updated_at"] = now
+        run["component_states"] = [states[name] for name in run["target_components"]]
+        self.store.update_run(run)
+        event: dict[str, Any] = {"type": event_type, "component": component, "message": message}
+        if artifact_path is not None:
+            event["artifact_path"] = artifact_path
+        self.store.append_run_event(run_id, now, event)
+
+    def _finish_workflow_failure(
+        self,
+        run_id: str,
+        component: str,
+        code: str,
+        artifact_path: str,
+        message: str,
+    ) -> None:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return
+        now = _iso(_now())
+        states = {item["component"]: dict(item) for item in run["component_states"]}
+        states[component] = {
+            "component": component,
+            "state": "FAILED",
+            "checkpoint": "component_or_control_host_failed",
+            "message": code,
+            "artifact_path": artifact_path,
+        }
+        for name in run["target_components"]:
+            if name != component and states[name].get("state") in {"BLOCKED", "WAITING"}:
+                states[name] = {
+                    "component": name,
+                    "state": "SKIPPED",
+                    "checkpoint": "dependency_failed",
+                    "message": f"Skipped because {component} did not succeed.",
+                }
+        run["state"] = "FAILED"
+        run["updated_at"] = now
+        run["component_states"] = [states[name] for name in run["target_components"]]
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run_id, now,
+            {
+                "type": code,
+                "component": component,
+                "message": message,
+                "artifact_path": artifact_path,
+            },
         )
 
     def _mark_component_run_started(self, run_id: str) -> None:
@@ -658,6 +1050,7 @@ class ReadOnlyPlanningService:
             safe_details = {
                 "intended_node_count": (
                     len(management["servers"])
+                    + 1
                     + len(downstream["controlplane"])
                     + len(downstream["workers"])
                 ),

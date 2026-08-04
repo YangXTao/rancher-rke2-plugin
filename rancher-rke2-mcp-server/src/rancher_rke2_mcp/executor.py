@@ -71,12 +71,16 @@ class VmExecutor:
         artifact_path = f"{workspace}/runs/{run_id}/vm"
         try:
             on_started(run_id)
-            self._run(config, artifact_path)
+            self.execute(config, artifact_path)
         except Exception:
             LOGGER.exception("VM execution failed for run %s", run_id)
             on_complete(ExecutionResult(run_id, False, "VM_EXECUTION_FAILED", artifact_path))
             return
         on_complete(ExecutionResult(run_id, True, "VM_EXECUTION_SUCCEEDED", artifact_path))
+
+    def execute(self, config: dict[str, Any], artifact_path: str) -> None:
+        """Run this component synchronously for a workflow coordinator."""
+        self._run(config, artifact_path)
 
     def _run(self, config: dict[str, Any], artifact_path: str) -> None:
         import paramiko
@@ -300,12 +304,16 @@ class NodeInitExecutor(VmExecutor):
         artifact_path = f"{str(config['run']['workspace']).rstrip('/')}/runs/{run_id}/node-init"
         try:
             on_started(run_id)
-            self._run_node_init(config, artifact_path)
+            self.execute(config, artifact_path)
         except Exception:
             LOGGER.exception("Node initialization failed for run %s", run_id)
             on_complete(ExecutionResult(run_id, False, "NODE_INIT_EXECUTION_FAILED", artifact_path))
             return
         on_complete(ExecutionResult(run_id, True, "NODE_INIT_SUCCEEDED", artifact_path))
+
+    def execute(self, config: dict[str, Any], artifact_path: str) -> None:
+        """Run this component synchronously for a workflow coordinator."""
+        self._run_node_init(config, artifact_path)
 
     def _run_node_init(self, config: dict[str, Any], artifact_path: str) -> None:
         import paramiko

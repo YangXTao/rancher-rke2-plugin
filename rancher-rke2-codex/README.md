@@ -11,7 +11,7 @@ If a plan includes `vm`, node SSH checks are intentionally skipped because the
 nodes are expected to be created by that plan. Control-host, vCenter, registry,
 and optional proxy checks still run.
 
-For a VM-only plan, `start_run` requires the exact plan approval text, matching
+For a single-component plan, `start_run` requires the exact plan approval text, matching
 configuration digest, matching passed preflight, and an idempotency key. In 0.4.0
 it persists a `BLOCKED` run for audit and does not execute infrastructure.
 

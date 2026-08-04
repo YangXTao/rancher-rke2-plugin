@@ -1,7 +1,7 @@
 {
   "name": "rancher-rke2-codex",
-  "version": "0.6.2",
-  "description": "Codex client plugin for a TLS-protected Rancher/RKE2 MCP server with secret references, non-mutating preflight, and approval-gated VM execution.",
+  "version": "0.7.0",
+  "description": "Codex client plugin for a TLS-protected Rancher/RKE2 MCP server with secret references, non-mutating preflight, and approval-gated VM-to-node-init workflows.",
   "author": {
     "name": "Rancher RKE2 Automation Team"
   },
@@ -16,7 +16,7 @@
       "MCP orchestration",
       "Rancher/RKE2 lifecycle",
       "Docker Secret references",
-      "Approval-gated VM execution",
+      "Approval-gated VM-to-node-init workflows",
       "Read-only diagnostics",
       "Audited runbooks"
     ],

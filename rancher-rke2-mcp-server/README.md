@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.5.6
+# Rancher/RKE2 MCP Server 0.7.0
+
+## 0.7.0 one-approval VM-to-node-init workflow
+
+`start_workflow` accepts only an immutable ordered `vm`, `node-init` plan and
+the exact `APPROVE WORKFLOW <plan-id>` text. It creates the VMs, waits up to five
+minutes for every node TCP/22 endpoint to become reachable, then runs node-init.
+Any component or readiness failure stops the workflow without an automatic retry.
+Existing `start_run` remains available for one supported component at a time.
 
 ## 0.5.6 timestamped run IDs
 
