@@ -1,0 +1,36 @@
+---
+rke2_download_mode: online
+rke2_install_method: tar
+rke2_control_artifact_path: /software/rke2
+rke2_control_images_path: "{{ rke2_control_artifact_path }}/images"
+rke2_remote_software_path: /software/rke2
+rke2_remote_artifact_path: /var/lib/rancher/rke2/agent/images
+rke2_install_script_source: "{{ rke2_control_artifact_path }}/install.sh"
+rke2_install_script: "{{ rke2_remote_software_path }}/install.sh"
+rke2_artifact_path: "{{ rke2_remote_artifact_path }}"
+rke2_binary_archive_name: rke2.linux-amd64.tar.gz
+rke2_checksum_name: sha256sum-amd64.txt
+rke2_binary_archive_source: "{{ rke2_control_images_path }}/{{ rke2_binary_archive_name }}"
+rke2_checksum_source: "{{ rke2_control_images_path }}/{{ rke2_checksum_name }}"
+rke2_manifest_source: "{{ rke2_control_artifact_path }}/manifest.yaml"
+rke2_offline_image_source_dir: "{{ rke2_control_images_path }}"
+rke2_offline_image_files: []
+rke2_agent_images_dir: /var/lib/rancher/rke2/agent/images
+rke2_signed_cert_expiration_days: 3650
+rke2_configure_shell_profile: true
+rke2_token_file: "/data/rancher/automation/runs/{{ automation_run_id }}/secrets/rke2-token"
+rke2_management_version: ""
+rke2_bootstrap_endpoint: ""
+rke2_registration_endpoint: ""
+rke2_tls_sans: []
+rke2_cluster_cidr: 10.42.0.0/16
+rke2_service_cidr: 10.43.0.0/16
+rke2_cluster_dns: 10.43.0.10
+registry_enabled: false
+registry_hostname: ""
+registry_ca_file: ""
+registry_ca_target: /etc/rancher/rke2/registry-ca.crt
+registry_tls_insecure_skip_verify: false
+registry_local_auth_enabled: false
+registry_mirrors: {}
+registry_configs: {}

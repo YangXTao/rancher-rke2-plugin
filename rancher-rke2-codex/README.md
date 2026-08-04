@@ -1,19 +1,23 @@
-# Rancher RKE2 Codex Plugin 0.4.0
+# Rancher RKE2 Codex Plugin 0.8.0
 
-## 0.4.0 approval-gated run workflow
+## 0.8.0 VM-to-Local-RKE2 workflow
 
-After `build_plan` and `get_plan`, the orchestration Skill calls
-`preflight_plan`. A failed result stops the workflow before future execution tools
-could be considered. A passed TCP check proves reachability only; it is not an SSH,
-vSphere, registry, or proxy authentication result.
+The primary orchestration Skill uses the Rancher/RKE2 MCP Server as the only
+infrastructure execution path. After `validate_config`, `build_plan`, and a
+passing `preflight_plan`, an exact `APPROVE WORKFLOW <plan-id>` can start either
+of the immutable ordered workflows:
 
-If a plan includes `vm`, node SSH checks are intentionally skipped because the
-nodes are expected to be created by that plan. Control-host, vCenter, registry,
-and optional proxy checks still run.
+- `vm` → `node-init`
+- `vm` → `node-init` → `local-rke2`
 
-For a single-component plan, `start_run` requires the exact plan approval text, matching
-configuration digest, matching passed preflight, and an idempotency key. In 0.4.0
-it persists a `BLOCKED` run for audit and does not execute infrastructure.
+The three-stage workflow creates the VMs, waits for every node TCP/22 endpoint,
+initializes the nodes, and installs the fixed three-server Local RKE2 cluster from
+the validated control-container assets. A failed component stops downstream work;
+there is no automatic retry.
+
+`start_run` remains available for one component at a time (`vm`, `node-init`, or
+`local-rke2`). A TCP preflight pass is reachability only, not SSH, vSphere,
+registry, or proxy authentication.
 
 这是 Rancher/RKE2 自动化体系的 Codex 客户端Plugin。它通过一个领域 MCP
 Server完成规划、未来执行、状态跟踪、诊断和审计。

@@ -1,11 +1,13 @@
-# Rancher/RKE2 MCP Server 0.7.0
+# Rancher/RKE2 MCP Server 0.8.0
 
-## 0.7.0 one-approval VM-to-node-init workflow
+## 0.8.0 one-approval VM-to-Local-RKE2 workflow
 
-`start_workflow` accepts only an immutable ordered `vm`, `node-init` plan and
-the exact `APPROVE WORKFLOW <plan-id>` text. It creates the VMs, waits up to five
-minutes for every node TCP/22 endpoint to become reachable, then runs node-init.
-Any component or readiness failure stops the workflow without an automatic retry.
+`start_workflow` accepts only immutable ordered `vm` → `node-init` or `vm` →
+`node-init` → `local-rke2` plans and the exact `APPROVE WORKFLOW <plan-id>` text.
+It creates the VMs, waits up to five minutes for every node TCP/22 endpoint to
+become reachable, runs node-init, and — for the three-stage plan — installs the
+three-server Local RKE2 cluster from the validated control-container assets. Any
+component or readiness failure stops the workflow without an automatic retry.
 Existing `start_run` remains available for one supported component at a time.
 
 ## 0.5.6 timestamped run IDs
@@ -74,7 +76,7 @@ For plans that do not include `vm`, target node SSH TCP checks are performed. It
 SSH commands, call vSphere APIs, or change any infrastructure. Results are saved
 without Secret values and can be read with `get_preflight(preflight_id)`.
 
-`start_run` is now available only for a VM-only plan. The server requires the
+`start_run` is now available only for an approved single-component plan. The server requires the
 matching configuration digest, an unexpired `PASSED` preflight, the exact plan
 approval text, and an idempotency key. It then persists a `BLOCKED` run with
 structured events. Version 0.4.0 intentionally has **no execution backend**: it

@@ -30,13 +30,15 @@ EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
 
 
 def make_service(
-    tmp_path: Path, *, secret_root: Path | None = None, executor=None, node_executor=None
+    tmp_path: Path, *, secret_root: Path | None = None, executor=None, node_executor=None,
+    local_executor=None,
 ) -> ReadOnlyPlanningService:
     return ReadOnlyPlanningService(
         SQLiteStore(tmp_path / "state.db"),
         secret_root=str(secret_root or tmp_path / "secrets"),
         executor=executor,
         node_executor=node_executor,
+        local_executor=local_executor,
     )
 
 
@@ -313,6 +315,46 @@ def test_workflow_runs_vm_then_node_init_after_one_approval(tmp_path: Path) -> N
     ]
     assert vm_executor.artifact_paths[0].endswith("/vm")
     assert node_executor.artifact_paths[0].endswith("/node-init")
+
+
+def test_workflow_runs_local_rke2_after_node_init(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    local_executor = WorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+        local_executor=local_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm", "node-init", "local-rke2"])["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="vm-node-local-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [item["state"] for item in stored["data"]["run"]["component_states"]] == [
+        "SUCCEEDED", "SUCCEEDED", "SUCCEEDED"
+    ]
+    assert local_executor.artifact_paths[0].endswith("/local-rke2")
 
 
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:

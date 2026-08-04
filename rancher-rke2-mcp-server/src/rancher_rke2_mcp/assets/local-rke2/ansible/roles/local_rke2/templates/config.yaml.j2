@@ -1,0 +1,13 @@
+token: "{{ rke2_join_token }}"
+{% if inventory_hostname != groups['management_servers'][0] %}
+server: "https://{{ rke2_bootstrap_endpoint }}:9345"
+{% endif %}
+tls-san:
+{% for san in rke2_tls_sans %}
+  - "{{ san }}"
+{% endfor %}
+cni: cilium
+disable-kube-proxy: false
+cluster-cidr: "{{ rke2_cluster_cidr }}"
+service-cidr: "{{ rke2_service_cidr }}"
+cluster-dns: "{{ rke2_cluster_dns }}"

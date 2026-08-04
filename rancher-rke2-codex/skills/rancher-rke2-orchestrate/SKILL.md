@@ -32,10 +32,10 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
 9. If preflight is `FAILED`, stop. The user must repair the reported prerequisite,
    then validate and build a fresh plan before running preflight again.
 10. If capabilities expose `start_workflow` and the plan target is exactly
-   `vm`, `node-init`, prefer it. It requires the exact `APPROVE WORKFLOW <plan-id>`
+   `vm`, `node-init` or `vm`, `node-init`, `local-rke2`, prefer it. It requires the exact `APPROVE WORKFLOW <plan-id>`
    text, matching current `PASSED` preflight, and a stable idempotency key. One approval
-   authorizes only this immutable two-stage workflow: VM creation, an internal TCP/22
-   readiness wait for every node, then node initialization.
+   authorizes only the immutable planned workflow: VM creation, an internal TCP/22
+   readiness wait for every node, node initialization, and only when selected the three-server Local RKE2 installation.
 11. If `start_workflow` is unavailable, or the target is a single component, use
    `start_run` only when capabilities report that component as executable. It requires
    the exact component-plan approval text and a stable idempotency key.
@@ -64,8 +64,8 @@ read-only. Do not start a run unless the user explicitly authorizes execution.
 - Never reinterpret a TCP pass as successful SSH, vSphere, Registry, or proxy
   authentication. Those authenticated checks belong to a later server version.
 - For a failed run, report the failed component and checkpoint. Do not auto-retry.
-- A workflow approval does not authorize Local RKE2, Rancher, downstream, destruction,
-  or any component outside the exact immutable plan.
+- A workflow approval does not authorize Rancher, downstream, destruction, or any
+  component outside the exact immutable plan.
 - For VM destruction, use `$rancher-rke2-vm`; never reinterpret a normal approval
   as destruction approval.
 - If the final verified run state is `SUCCEEDED`, include the exact line

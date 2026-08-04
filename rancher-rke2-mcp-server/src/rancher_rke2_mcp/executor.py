@@ -357,3 +357,202 @@ class NodeInitExecutor(VmExecutor):
             self._put_text(sftp, f"{run_dir}/ansible/inventory/hosts.yml", json.dumps(inventory), mode=0o600)
         finally:
             sftp.close()
+
+
+class LocalRke2Executor(VmExecutor):
+    """Execute the packaged three-server Local RKE2 component remotely.
+
+    The assets are copied from the validated ``rancher-rke2-local`` skill.  As
+    with the earlier stages, only the SSH control host is contacted directly;
+    Ansible and all artifact preparation execute inside the persistent control
+    container.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.assets_root = Path(__file__).parent / "assets" / "local-rke2"
+
+    def submit(
+        self,
+        *,
+        config: dict[str, Any],
+        run_id: str,
+        on_started: Callable[[str], None],
+        on_complete: Callable[[ExecutionResult], None],
+    ) -> None:
+        Thread(
+            target=self._run_and_report,
+            args=(config, run_id, on_started, on_complete),
+            daemon=True,
+            name=f"rancher-rke2-local-{run_id[-8:]}",
+        ).start()
+
+    def _run_and_report(
+        self,
+        config: dict[str, Any],
+        run_id: str,
+        on_started: Callable[[str], None],
+        on_complete: Callable[[ExecutionResult], None],
+    ) -> None:
+        artifact_path = f"{str(config['run']['workspace']).rstrip('/')}/runs/{run_id}/local-rke2"
+        try:
+            on_started(run_id)
+            self.execute(config, artifact_path)
+        except Exception:
+            LOGGER.exception("Local RKE2 execution failed for run %s", run_id)
+            on_complete(ExecutionResult(run_id, False, "LOCAL_RKE2_EXECUTION_FAILED", artifact_path))
+            return
+        on_complete(ExecutionResult(run_id, True, "LOCAL_RKE2_SUCCEEDED", artifact_path))
+
+    def execute(self, config: dict[str, Any], artifact_path: str) -> None:
+        local = config.get("local_rke2", {})
+        if local.get("cni", "cilium") != "cilium" or bool(local.get("disable_kube_proxy", False)):
+            raise ValueError("Local RKE2 requires cilium with kube-proxy retained")
+        self._run_local_rke2(config, artifact_path)
+
+    def _run_local_rke2(self, config: dict[str, Any], artifact_path: str) -> None:
+        import paramiko
+
+        control = config["execution"]["control_host"]
+        client = paramiko.SSHClient()
+        client.load_host_keys(str(self.known_hosts_path))
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        password = DockerSecretResolver(self.secret_root).resolve(control["password_ref"])
+        try:
+            client.connect(
+                hostname=str(control["address"]),
+                port=int(control["port"]),
+                username=str(control["username"]),
+                password=password,
+                allow_agent=False,
+                look_for_keys=False,
+                timeout=15,
+                banner_timeout=15,
+                auth_timeout=15,
+            )
+            self._upload_local_bundle(client, config, artifact_path)
+            container = config["execution"]["container"]
+            offline_images = [str(item) for item in config.get("local_rke2", {}).get("offline_image_files", [])]
+            command = " ".join(
+                shlex.quote(value)
+                for value in (
+                    "bash",
+                    f"{artifact_path}/local-rke2-runner.sh",
+                    artifact_path,
+                    str(container["name"]),
+                    str(container["image"]),
+                    str(container["strategy"]),
+                    str(config["downloads"]["software_root"]),
+                    str(config["run"]["workspace"]),
+                    str(config["downloads"]["mode"]),
+                    str(config["versions"]["rke2_management"]),
+                    *offline_images,
+                )
+            )
+            _, stdout, stderr = client.exec_command(command, timeout=7200)
+            if stdout.channel.recv_exit_status() != 0:
+                raise RuntimeError("remote local-rke2 runner failed")
+            stdout.read()
+            stderr.read()
+        finally:
+            client.close()
+
+    def _upload_local_bundle(self, client: Any, config: dict[str, Any], run_dir: str) -> None:
+        sftp = client.open_sftp()
+        try:
+            self._mkdirs(sftp, run_dir)
+            for source in self.assets_root.rglob("*"):
+                if source.is_file():
+                    remote = f"{run_dir}/{source.relative_to(self.assets_root).as_posix()}"
+                    self._mkdirs(sftp, remote.rsplit("/", 1)[0])
+                    sftp.put(str(source), remote)
+                    if source.suffix == ".sh":
+                        sftp.chmod(remote, 0o700)
+            self._put_text(sftp, f"{run_dir}/.dependency.env", self._dependency_env(config), mode=0o600)
+            self._mkdirs(sftp, f"{run_dir}/ansible/inventory")
+            self._mkdirs(sftp, f"{run_dir}/ansible/group_vars")
+            self._put_text(
+                sftp,
+                f"{run_dir}/ansible/inventory/hosts.json",
+                json.dumps(self._local_inventory(config), ensure_ascii=False, indent=2) + "\n",
+                mode=0o600,
+            )
+            self._put_text(
+                sftp,
+                f"{run_dir}/ansible/group_vars/all.json",
+                json.dumps(self._local_group_vars(config, run_dir), ensure_ascii=False, indent=2) + "\n",
+                mode=0o600,
+            )
+        finally:
+            sftp.close()
+
+    def _local_inventory(self, config: dict[str, Any]) -> dict[str, Any]:
+        resolver = DockerSecretResolver(self.secret_root)
+        management = config["nodes"]["management"]["servers"]
+        return {
+            "all": {
+                "vars": {
+                    "ansible_connection": "paramiko",
+                    "ansible_user": str(config["node_access"]["username"]),
+                    "ansible_password": resolver.resolve(config["node_access"]["password_ref"]),
+                    "ansible_become_password": resolver.resolve(config["node_access"]["password_ref"]),
+                },
+                "children": {
+                    "management_servers": {
+                        "hosts": {
+                            node["hostname"]: {"ansible_host": str(node["ip"])}
+                            for node in management
+                        }
+                    }
+                },
+            }
+        }
+
+    def _local_group_vars(self, config: dict[str, Any], run_dir: str) -> dict[str, Any]:
+        management = config["nodes"]["management"]["servers"]
+        registry = config["registry"]
+        local = config.get("local_rke2", {})
+        local_registry = local.get("registry", {})
+        hostname = str(registry["hostname"])
+        mirrors = local_registry.get("mirrors")
+        if mirrors is None:
+            mirrors = {
+                "docker.io": {"endpoints": [f"https://{hostname}"], "rewrites": {"(^.+$)": "hub/$1"}},
+                "registry.rancher.cn": {"endpoints": [f"https://{hostname}"], "rewrites": {}},
+                "registry.rancher.com": {"endpoints": [f"https://{hostname}"], "rewrites": {}},
+            }
+        configs = local_registry.get("configs")
+        if configs is None:
+            auth_enabled = bool(registry.get("username") and registry.get("password_ref"))
+            configs = {
+                hostname: {
+                    "auth": {
+                        "enabled": auth_enabled,
+                        "username": registry.get("username") or "",
+                        "password": DockerSecretResolver(self.secret_root).resolve(registry["password_ref"])
+                        if auth_enabled else "",
+                    },
+                    "tls": {"insecure_skip_verify": bool(registry.get("insecure_skip_verify", False)), "ca_file": ""},
+                }
+            }
+        run_id = run_dir.rstrip("/").rsplit("/runs/", 1)[-1].rsplit("/", 1)[0]
+        return {
+            "automation_run_id": run_id,
+            "rke2_download_mode": config["downloads"]["mode"],
+            "rke2_control_artifact_path": f"{config['downloads']['software_root'].rstrip('/')}/rke2",
+            "rke2_management_version": config["versions"]["rke2_management"],
+            "rke2_bootstrap_endpoint": str(management[0]["ip"]),
+            "rke2_registration_endpoint": str(management[0]["ip"]),
+            "rke2_tls_sans": [str(node["ip"]) for node in management],
+            "rke2_signed_cert_expiration_days": int(local.get("signed_cert_expiration_days", 3650)),
+            "rke2_cluster_cidr": str(local.get("cluster_cidr", "10.42.0.0/16")),
+            "rke2_service_cidr": str(local.get("service_cidr", "10.43.0.0/16")),
+            "rke2_cluster_dns": str(local.get("cluster_dns", "10.43.0.10")),
+            "rke2_offline_image_files": [str(item) for item in local.get("offline_image_files", [])],
+            "rancher_kubeconfig": f"{config['run']['workspace'].rstrip('/')}/runs/{run_id}/kubeconfig/rke2.yaml",
+            "registry_enabled": bool(hostname),
+            "registry_hostname": hostname,
+            "registry_tls_insecure_skip_verify": bool(registry.get("insecure_skip_verify", False)),
+            "registry_mirrors": mirrors,
+            "registry_configs": configs,
+        }

@@ -1,19 +1,19 @@
-# Rancher/RKE2 MCP Server Contract 0.4.0
+# Rancher/RKE2 MCP Server Contract 0.8.0
 
-## Implemented preflight boundary
+## Implemented execution boundary
 
-Server 0.4.0 provides `preflight_plan`, `get_preflight`, `start_run`, `get_run`,
-and `get_run_events`. If a preflight plan
-includes `vm`, node SSH checks are skipped because those nodes are intended to be
-created; vCenter and registry checks remain required.
-Preflight can resolve mounted Secret availability and test TCP reachability only.
-It does not authenticate against SSH, vCenter, registry, or proxy services, and it
-does not make any infrastructure change.
+Server 0.8.0 provides `preflight_plan`, `get_preflight`, `start_run`,
+`start_workflow`, `get_run`, and `get_run_events`. Preflight resolves mounted
+Secret availability and performs TCP reachability tests only. If a plan includes
+`vm`, intended node SSH endpoints are correctly reported as `SKIPPED`; vCenter,
+registry, proxy, and control-host TCP checks remain required.
 
-`start_run` is a server-side mutation gate: it accepts one supported component plan, exact
-plan approval text, matching digest, and a current `PASSED` preflight. It records
-durable state with idempotency protection. In 0.4.0 the result is intentionally
-`BLOCKED`, because no infrastructure execution backend has been introduced.
+`start_run` executes one approved component (`vm`, `node-init`, or `local-rke2`).
+`start_workflow` executes only an immutable ordered `vm` → `node-init` or
+`vm` → `node-init` → `local-rke2` plan. Both require exact approval text, the
+matching digest, a current `PASSED` preflight, and an idempotency key. Execution
+runs through the SSH control host and its persistent control container; secrets are
+resolved only there and are never returned or persisted in server state.
 
 ## 服务职责
 

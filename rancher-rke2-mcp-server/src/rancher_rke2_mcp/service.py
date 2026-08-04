@@ -22,7 +22,7 @@ from .constants import (
     SERVER_VERSION,
 )
 from .preflight import NonMutatingPreflight
-from .executor import ExecutionResult, NodeInitExecutor, VmExecutor
+from .executor import ExecutionResult, LocalRke2Executor, NodeInitExecutor, VmExecutor
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
@@ -74,14 +74,17 @@ class ReadOnlyPlanningService:
         preflight_timeout_seconds: float = PREFLIGHT_TCP_TIMEOUT_SECONDS,
         executor: VmExecutor | None = None,
         node_executor: NodeInitExecutor | None = None,
+        local_executor: LocalRke2Executor | None = None,
     ):
         self.store = store
         self.secret_root = secret_root
         self.preflight_timeout_seconds = preflight_timeout_seconds
         self.executor = executor
         self.node_executor = node_executor
+        self.local_executor = local_executor
 
     def get_capabilities(self) -> dict[str, Any]:
+        workflow_scopes = self._workflow_scopes()
         return _envelope(
             ok=True,
             state="READY",
@@ -99,6 +102,7 @@ class ReadOnlyPlanningService:
                 "infrastructure_side_effects": bool(
                     (self.executor is not None and self.executor.ready())
                     or (self.node_executor is not None and self.node_executor.ready())
+                    or (self.local_executor is not None and self.local_executor.ready())
                 ),
                 "plaintext_credentials_compatible": False,
                 "secret_reference_schemes": list(SECRET_REFERENCE_SCHEMES),
@@ -106,10 +110,9 @@ class ReadOnlyPlanningService:
                 "preflight_network_checks": True,
                 "preflight_authentication_attempted": False,
                 "preflight_mutates_infrastructure": False,
-                "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor)) if executor and executor.ready()],
-                "workflow_execution_scope": ["vm", "node-init"]
-                if self._workflow_ready()
-                else [],
+                "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor), ("local-rke2", self.local_executor)) if executor and executor.ready()],
+                "workflow_execution_scope": workflow_scopes[-1] if workflow_scopes else [],
+                "workflow_execution_scopes": workflow_scopes,
                 "execution_backend": "ssh-control-container",
                 "execution_backend_configured": bool(
                     self.executor is not None and self.executor.ready()
@@ -191,8 +194,8 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "state": "PLANNED",
             "read_only": True,
-            "executable": components in (["vm"], ["node-init"], ["vm", "node-init"]),
-            "execution_mode": "WORKFLOW" if components == ["vm", "node-init"] else "COMPONENT",
+            "executable": components in (["vm"], ["node-init"], ["local-rke2"], ["vm", "node-init"], ["vm", "node-init", "local-rke2"]),
+            "execution_mode": "WORKFLOW" if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"]) else "COMPONENT",
             "config_digest": config_digest,
             "target_components": components,
             "created_at": _iso(created),
@@ -211,7 +214,7 @@ class ReadOnlyPlanningService:
             ],
             "approval_text": (
                 f"APPROVE WORKFLOW {plan_id}"
-                if components == ["vm", "node-init"]
+                if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"])
                 else f"APPROVE PLAN {plan_id}"
             ),
         }
@@ -321,13 +324,7 @@ class ReadOnlyPlanningService:
         approval_text: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        """Start one approval-gated VM-to-node-init workflow.
-
-        The only supported workflow scope is deliberately narrow: the two
-        components that have individually proven execution backends.  The worker
-        itself enforces ordering and performs a fresh node readiness gate after
-        Terraform finishes; it never invokes the later RKE2/Rancher stages.
-        """
+        """Start one approval-gated VM-to-node-init or VM-to-Local-RKE2 workflow."""
         request_fingerprint = self._request_fingerprint(
             "workflow", plan_id, config_digest, preflight_id, approval_text
         )
@@ -366,13 +363,14 @@ class ReadOnlyPlanningService:
         if error is not None:
             return error
         assert plan is not None and preflight is not None and config is not None
-        if plan["target_components"] != ["vm", "node-init"]:
+        components = plan["target_components"]
+        if components not in (["vm", "node-init"], ["vm", "node-init", "local-rke2"]):
             return _envelope(
                 ok=False,
                 state="UNSUPPORTED_SCOPE",
                 errors=[{
                     "path": "plan_id",
-                    "message": "start_workflow accepts exactly the ordered [vm, node-init] plan.",
+                    "message": "start_workflow accepts exactly [vm, node-init] or [vm, node-init, local-rke2].",
                 }],
             )
         if approval_text != plan["approval_text"]:
@@ -384,13 +382,13 @@ class ReadOnlyPlanningService:
                     "message": "Approval text must exactly match the workflow approval text.",
                 }],
             )
-        if not self._workflow_ready():
+        if not self._workflow_ready_for(components):
             return _envelope(
                 ok=False,
                 state="EXECUTION_BACKEND_UNAVAILABLE",
                 errors=[{
                     "path": "execution.control_host",
-                    "message": "Both VM and node-init executors require mounted known_hosts and packaged assets.",
+                    "message": "Every selected workflow executor requires mounted known_hosts and packaged assets.",
                 }],
             )
 
@@ -404,24 +402,11 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "config_digest": config_digest,
             "preflight_id": preflight_id,
-            "target_components": ["vm", "node-init"],
+            "target_components": components,
             "created_at": created_at,
             "updated_at": created_at,
             "execution_backend": "ssh-control-container",
-            "component_states": [
-                {
-                    "component": "vm",
-                    "state": "QUEUED",
-                    "checkpoint": "awaiting_control_host",
-                    "message": "Approved workflow is queued to create VMs.",
-                },
-                {
-                    "component": "node-init",
-                    "state": "BLOCKED",
-                    "checkpoint": "waiting_for_vm",
-                    "message": "Waiting for the VM component to succeed.",
-                },
-            ],
+            "component_states": self._initial_workflow_states(components),
         }
         self.store.save_run(run)
         self.store.save_idempotency_key(idempotency_key, request_fingerprint, run_id)
@@ -431,11 +416,11 @@ class ReadOnlyPlanningService:
             {
                 "type": "WORKFLOW_QUEUED",
                 "message": "Workflow approval and initial preflight were accepted.",
-                "components": ["vm", "node-init"],
+                "components": components,
             },
         )
         Thread(
-            target=self._run_vm_node_workflow,
+            target=self._run_workflow,
             args=(config, run_id),
             daemon=True,
             name=f"rancher-rke2-workflow-{run_id[-8:]}",
@@ -519,14 +504,14 @@ class ReadOnlyPlanningService:
                     }
                 ],
             )
-        if plan["target_components"] not in (["vm"], ["node-init"]):
+        if plan["target_components"] not in (["vm"], ["node-init"], ["local-rke2"]):
             return _envelope(
                 ok=False,
                 state="UNSUPPORTED_SCOPE",
                 errors=[
                     {
                         "path": "plan_id",
-                        "message": "start_run accepts only a VM-only or node-init-only plan; use start_workflow for [vm, node-init].",
+                        "message": "start_run accepts a single VM, node-init, or local-rke2 plan; use start_workflow for ordered multi-component plans.",
                     }
                 ],
             )
@@ -578,7 +563,11 @@ class ReadOnlyPlanningService:
             )
 
         component = plan["target_components"][0]
-        selected_executor = self.executor if component == "vm" else self.node_executor
+        selected_executor = {
+            "vm": self.executor,
+            "node-init": self.node_executor,
+            "local-rke2": self.local_executor,
+        }[component]
         if selected_executor is None or not selected_executor.ready():
             return _envelope(
                 ok=False,
@@ -643,13 +632,41 @@ class ReadOnlyPlanningService:
             data={"run": run, "idempotent_replay": False},
         )
 
-    def _workflow_ready(self) -> bool:
-        return bool(
-            self.executor is not None
-            and self.executor.ready()
-            and self.node_executor is not None
-            and self.node_executor.ready()
-        )
+    def _workflow_scopes(self) -> list[list[str]]:
+        scopes: list[list[str]] = []
+        if self._workflow_ready_for(["vm", "node-init"]):
+            scopes.append(["vm", "node-init"])
+        if self._workflow_ready_for(["vm", "node-init", "local-rke2"]):
+            scopes.append(["vm", "node-init", "local-rke2"])
+        return scopes
+
+    def _workflow_ready_for(self, components: list[str]) -> bool:
+        executors = {
+            "vm": self.executor,
+            "node-init": self.node_executor,
+            "local-rke2": self.local_executor,
+        }
+        return all(executors[name] is not None and executors[name].ready() for name in components)
+
+    @staticmethod
+    def _initial_workflow_states(components: list[str]) -> list[dict[str, str]]:
+        states: list[dict[str, str]] = []
+        for index, component in enumerate(components):
+            if index == 0:
+                states.append({
+                    "component": component,
+                    "state": "QUEUED",
+                    "checkpoint": "awaiting_control_host",
+                    "message": "Approved workflow is queued to create VMs.",
+                })
+            else:
+                states.append({
+                    "component": component,
+                    "state": "BLOCKED",
+                    "checkpoint": f"waiting_for_{components[index - 1]}",
+                    "message": f"Waiting for the {components[index - 1]} component to succeed.",
+                })
+        return states
 
     def _validated_execution_inputs(
         self,
@@ -715,10 +732,11 @@ class ReadOnlyPlanningService:
             )
         return plan, preflight, config, None
 
-    def _run_vm_node_workflow(self, config: dict[str, Any], run_id: str) -> None:
+    def _run_workflow(self, config: dict[str, Any], run_id: str) -> None:
         workspace = str(config["run"]["workspace"]).rstrip("/")
         vm_artifact = f"{workspace}/runs/{run_id}/vm"
         node_artifact = f"{workspace}/runs/{run_id}/node-init"
+        local_artifact = f"{workspace}/runs/{run_id}/local-rke2"
         self._set_workflow_component(
             run_id, "vm", "RUNNING", "control_host_execution_started",
             "SSH control-host executor started for VM creation.", "WORKFLOW_STARTED",
@@ -782,6 +800,29 @@ class ReadOnlyPlanningService:
         run = self.store.get_run(run_id)
         if run is None:
             return
+        if "local-rke2" in run["target_components"]:
+            self._set_workflow_component(
+                run_id, "local-rke2", "RUNNING", "control_host_execution_started",
+                "Node initialization succeeded; Local RKE2 installation started.",
+                "WORKFLOW_LOCAL_RKE2_STARTED",
+            )
+            try:
+                assert self.local_executor is not None
+                self.local_executor.execute(config, local_artifact)
+            except Exception:
+                LOGGER.exception("Workflow Local RKE2 component failed for run %s", run_id)
+                self._finish_workflow_failure(
+                    run_id, "local-rke2", "LOCAL_RKE2_EXECUTION_FAILED", local_artifact,
+                    "Local RKE2 installation failed after node initialization.",
+                )
+                return
+            self._set_workflow_component(
+                run_id, "local-rke2", "SUCCEEDED", "completed", "LOCAL_RKE2_SUCCEEDED",
+                "LOCAL_RKE2_SUCCEEDED", artifact_path=local_artifact,
+            )
+            run = self.store.get_run(run_id)
+            if run is None:
+                return
         now = _iso(_now())
         run["state"] = "SUCCEEDED"
         run["updated_at"] = now
@@ -790,8 +831,11 @@ class ReadOnlyPlanningService:
             run_id, now,
             {
                 "type": "WORKFLOW_SUCCEEDED",
-                "components": ["vm", "node-init"],
-                "artifact_paths": [vm_artifact, node_artifact],
+                "components": run["target_components"],
+                "artifact_paths": [
+                    f"{workspace}/runs/{run_id}/{component}"
+                    for component in run["target_components"]
+                ],
             },
         )
 
