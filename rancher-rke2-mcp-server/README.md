@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.8.1
+# Rancher/RKE2 MCP Server 0.8.2
+
+## 0.8.2 Local RKE2 group-variable guard
+
+The generated Local RKE2 group variables are now written to the exact Ansible
+`group_vars/all.yml` path. The pre-play inventory guard also verifies that the
+configured RKE2 management version reaches every management host, preventing a
+default-empty variable from reaching the playbook.
 
 ## 0.8.1 Local RKE2 inventory guard
 

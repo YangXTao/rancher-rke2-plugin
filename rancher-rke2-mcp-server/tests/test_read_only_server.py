@@ -367,7 +367,9 @@ def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
     assert "ansible-inventory --list" in runner
     assert "verify-inventory.py" in runner
     assert "inventory/hosts.yml" in executor_source
+    assert "group_vars/all.yml" in executor_source
     assert "INVENTORY_GROUP_INVALID" in verifier
+    assert "INVENTORY_VARIABLE_INVALID" in verifier
 
 
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 {
   "name": "rancher-rke2-codex",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Codex client plugin for a TLS-protected Rancher/RKE2 MCP server with secret references, non-mutating preflight, and approval-gated VM-to-Local-RKE2 workflows.",
   "author": {
     "name": "Rancher RKE2 Automation Team"

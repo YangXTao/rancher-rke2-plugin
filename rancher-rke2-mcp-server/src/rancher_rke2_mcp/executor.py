@@ -479,7 +479,7 @@ class LocalRke2Executor(VmExecutor):
             )
             self._put_text(
                 sftp,
-                f"{run_dir}/ansible/group_vars/all.json",
+                f"{run_dir}/ansible/group_vars/all.yml",
                 json.dumps(self._local_group_vars(config, run_dir), ensure_ascii=False, indent=2) + "\n",
                 mode=0o600,
             )

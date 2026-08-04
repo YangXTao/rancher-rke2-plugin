@@ -32,7 +32,7 @@ docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/prepare
   bash -lc 'set -a; source "$1/.dependency.env"; set +a; export DOWNLOAD_PROXY_URL="$HTTP_PROXY"; bash "$1/prepare-rke2-artifacts.sh" "$2" "$3" amd64 "$4/rke2" "${@:5}"' -- "$run_dir" "$mode" "$rke2_version" "$software_root" "${offline_images[@]}"
 
 docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/ansible-inventory.log" \
-  bash -lc "cd '$run_dir/ansible' && ansible-inventory --list > '$run_dir/ansible-inventory.json' && python3 '$run_dir/verify-inventory.py' '$run_dir/ansible-inventory.json' management_servers 3"
+  bash -lc "cd '$run_dir/ansible' && ansible-inventory --list > '$run_dir/ansible-inventory.json' && python3 '$run_dir/verify-inventory.py' '$run_dir/ansible-inventory.json' management_servers 3 '$rke2_version'"
 
 docker exec -i "$container_name" bash "$run_dir/run-logged.sh" "$run_dir/ansible-playbook.log" \
   bash -lc "cd '$run_dir/ansible' && ansible-playbook playbooks/local-rke2.yml"

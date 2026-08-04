@@ -1,4 +1,10 @@
-# Rancher RKE2 Codex Plugin 0.8.1
+# Rancher RKE2 Codex Plugin 0.8.2
+
+## 0.8.2 Local RKE2 group-variable safety guard
+
+The server verifies that the configured RKE2 version is present for all three
+management hosts before starting the playbook. Missing group variables are a
+failed run, never a default-valued installation attempt.
 
 ## 0.8.1 Local RKE2 inventory safety guard
 
