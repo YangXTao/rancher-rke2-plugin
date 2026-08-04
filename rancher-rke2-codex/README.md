@@ -1,4 +1,10 @@
-# Rancher RKE2 Codex Plugin 0.8.0
+# Rancher RKE2 Codex Plugin 0.8.1
+
+## 0.8.1 Local RKE2 inventory safety guard
+
+Local RKE2 execution fails before the playbook starts unless its generated
+inventory contains exactly three management servers. A no-host Ansible run can
+therefore never be reported as a successful Local RKE2 installation.
 
 ## 0.8.0 VM-to-Local-RKE2 workflow
 

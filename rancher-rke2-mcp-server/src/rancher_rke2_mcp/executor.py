@@ -473,7 +473,7 @@ class LocalRke2Executor(VmExecutor):
             self._mkdirs(sftp, f"{run_dir}/ansible/group_vars")
             self._put_text(
                 sftp,
-                f"{run_dir}/ansible/inventory/hosts.json",
+                f"{run_dir}/ansible/inventory/hosts.yml",
                 json.dumps(self._local_inventory(config), ensure_ascii=False, indent=2) + "\n",
                 mode=0o600,
             )

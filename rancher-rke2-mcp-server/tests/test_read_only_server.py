@@ -357,6 +357,19 @@ def test_workflow_runs_local_rke2_after_node_init(tmp_path: Path) -> None:
     assert local_executor.artifact_paths[0].endswith("/local-rke2")
 
 
+def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "local-rke2"
+    runner = (assets / "local-rke2-runner.sh").read_text(encoding="utf-8")
+    verifier = (assets / "verify-inventory.py").read_text(encoding="utf-8")
+    executor_source = (PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py").read_text(
+        encoding="utf-8"
+    )
+    assert "ansible-inventory --list" in runner
+    assert "verify-inventory.py" in runner
+    assert "inventory/hosts.yml" in executor_source
+    assert "INVENTORY_GROUP_INVALID" in verifier
+
+
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:
     secret_root = tmp_path / "secrets"
     write_required_secrets(secret_root)

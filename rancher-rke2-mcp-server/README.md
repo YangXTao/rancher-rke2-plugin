@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.8.0
+# Rancher/RKE2 MCP Server 0.8.1
+
+## 0.8.1 Local RKE2 inventory guard
+
+The Local RKE2 executor now writes the generated Ansible inventory to the exact
+configured `inventory/hosts.yml` path. Before the playbook starts, it runs
+`ansible-inventory --list` and requires exactly three `management_servers` hosts.
+An empty or unparsable inventory is therefore a failed run, never a successful
+no-op.
 
 ## 0.8.0 one-approval VM-to-Local-RKE2 workflow
 
