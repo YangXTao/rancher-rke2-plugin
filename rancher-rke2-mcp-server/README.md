@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.9.4
+# Rancher/RKE2 MCP Server 0.9.5
+
+## 0.9.5 RancherLB private-CA verification
+
+The RancherLB HTTPS verification defaults to private-CA mode when the generated
+inventory does not explicitly carry `rancher_private_ca`, matching the supported
+certificate flow without changing any installation resources.
 
 ## 0.9.4 direct Kubernetes API access after downloads
 

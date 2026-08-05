@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.9.4
+# Rancher RKE2 Codex Plugin 0.9.5
+
+## 0.9.5 RancherLB private-CA verification
+
+RancherLB verification now safely defaults to the private-CA certificate flow
+when its generated inventory omits the boolean flag.
 
 ## 0.9.4 direct management API access
 

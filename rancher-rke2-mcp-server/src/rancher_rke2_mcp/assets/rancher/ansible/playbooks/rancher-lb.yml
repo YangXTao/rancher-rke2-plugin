@@ -20,14 +20,14 @@
         argv: [curl, --fail, --silent, --show-error, --cacert, "{{ rancher_certificate.ca_file }}", "https://{{ rancher_hostname }}/ping"]
       register: rancher_external_ping
       changed_when: false
-      when: rancher_private_ca
+      when: rancher_private_ca | default(true) | bool
 
     - name: Verify Rancher HTTPS through RancherLB and the system trust store
       ansible.builtin.command:
         argv: [curl, --fail, --silent, --show-error, "https://{{ rancher_hostname }}/ping"]
       register: rancher_external_public_ping
       changed_when: false
-      when: not rancher_private_ca
+      when: not (rancher_private_ca | default(true) | bool)
 
     - name: Require Rancher ping response
       ansible.builtin.assert:
