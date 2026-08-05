@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.9.3
+# Rancher/RKE2 MCP Server 0.9.4
+
+## 0.9.4 direct Kubernetes API access after downloads
+
+Rancher artifact preparation retains `DOWNLOAD_PROXY_URL`, while the Rancher
+Ansible/kubectl phase now clears HTTP(S) proxy variables. Internal Kubernetes
+API calls therefore connect directly to the management server instead of being
+routed through an external download proxy.
 
 ## 0.9.3 Local RKE2 kubeconfig artifact path
 

@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.9.3
+# Rancher RKE2 Codex Plugin 0.9.4
+
+## 0.9.4 direct management API access
+
+Rancher installation keeps the download proxy only for artifact preparation and
+clears it before Ansible and kubectl access the internal management API.
 
 ## 0.9.3 Local RKE2 artifact path fix
 

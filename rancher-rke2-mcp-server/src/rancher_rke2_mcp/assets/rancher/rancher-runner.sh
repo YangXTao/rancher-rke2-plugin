@@ -26,7 +26,7 @@ docker exec -i "$container_name" bash "$run_dir/scripts/run-logged.sh" "$run_dir
   bash -lc 'set -a; source "$1/.dependency.env"; set +a; bash "$1/scripts/install-control-dependencies.sh" --components rancher --mode "$2" --software-root /software --proxy-url "$HTTP_PROXY"' -- "$run_dir" "$mode"
 
 docker exec -i "$container_name" bash "$run_dir/scripts/run-logged.sh" "$run_dir/rancher-install.log" \
-  bash -lc "cd '$run_dir/ansible' && set -a && source '$run_dir/.dependency.env' && set +a && export DOWNLOAD_PROXY_URL=\"\$HTTP_PROXY\" && ansible-playbook playbooks/rancher-install.yml"
+  bash -lc "cd '$run_dir/ansible' && set -a && source '$run_dir/.dependency.env' && set +a && export DOWNLOAD_PROXY_URL=\"\$HTTP_PROXY\" && unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy && ansible-playbook playbooks/rancher-install.yml"
 
 docker exec -i "$container_name" bash "$run_dir/scripts/run-logged.sh" "$run_dir/rancher-lb.log" \
   bash -lc "cd '$run_dir/ansible' && ansible-playbook playbooks/rancher-lb.yml"
