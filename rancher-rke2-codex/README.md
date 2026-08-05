@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.8.2
+# Rancher RKE2 Codex Plugin 0.8.3
+
+## 0.8.3 Local RKE2 explicit runtime variables
+
+The Local RKE2 playbook explicitly loads the generated runtime configuration, so
+role defaults cannot mask the configured RKE2 version after inventory parsing.
 
 ## 0.8.2 Local RKE2 group-variable safety guard
 

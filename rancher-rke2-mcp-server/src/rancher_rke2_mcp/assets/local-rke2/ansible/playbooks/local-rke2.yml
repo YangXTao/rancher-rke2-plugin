@@ -4,5 +4,7 @@
   become: true
   gather_facts: true
   serial: 1
+  vars_files:
+    - ../group_vars/all.yml
   roles:
     - role: local_rke2

@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.8.2
+# Rancher/RKE2 MCP Server 0.8.3
+
+## 0.8.3 Local RKE2 explicit runtime variables
+
+The Local RKE2 playbook now explicitly loads its generated runtime configuration
+through `vars_files`. This prevents role defaults from masking the configured RKE2
+version or other generated settings after inventory parsing.
 
 ## 0.8.2 Local RKE2 group-variable guard
 

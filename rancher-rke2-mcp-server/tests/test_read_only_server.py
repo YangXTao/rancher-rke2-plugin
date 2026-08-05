@@ -361,6 +361,9 @@ def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
     assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "local-rke2"
     runner = (assets / "local-rke2-runner.sh").read_text(encoding="utf-8")
     verifier = (assets / "verify-inventory.py").read_text(encoding="utf-8")
+    playbook = (assets / "ansible" / "playbooks" / "local-rke2.yml").read_text(
+        encoding="utf-8"
+    )
     executor_source = (PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py").read_text(
         encoding="utf-8"
     )
@@ -370,6 +373,8 @@ def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
     assert "group_vars/all.yml" in executor_source
     assert "INVENTORY_GROUP_INVALID" in verifier
     assert "INVENTORY_VARIABLE_INVALID" in verifier
+    assert "vars_files:" in playbook
+    assert "../group_vars/all.yml" in playbook
 
 
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:
