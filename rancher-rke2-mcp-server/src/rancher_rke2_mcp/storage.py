@@ -197,14 +197,17 @@ class SQLiteStore:
             rows = connection.execute(
                 """
                 SELECT run_json FROM runs
-                WHERE config_digest = ? AND state = 'SUCCEEDED'
+                WHERE config_digest = ?
                 ORDER BY created_at DESC
                 """,
                 (config_digest,),
             ).fetchall()
         for row in rows:
             run = json.loads(row["run_json"])
-            if run.get("target_components") == [component]:
+            if (
+                run.get("state") == "SUCCEEDED"
+                and run.get("target_components") == [component]
+            ):
                 return run
         return None
 

@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.9.0
+# Rancher RKE2 Codex Plugin 0.9.1
+
+## 0.9.1 Local artifact prerequisite fix
+
+Rancher execution now correctly discovers the last successful same-config Local
+RKE2 component record from the server state database.
 
 ## 0.9.0 Rancher component execution
 

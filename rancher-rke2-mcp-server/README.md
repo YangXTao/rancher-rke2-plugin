@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.9.0
+# Rancher/RKE2 MCP Server 0.9.1
+
+## 0.9.1 Local RKE2 artifact lookup fix
+
+The Rancher prerequisite lookup now reads the persisted `state` inside each
+run record, matching the existing SQLite schema. A valid successful Local RKE2
+run is therefore found correctly before Rancher execution is queued.
 
 ## 0.9.0 approval-gated Rancher component
 
