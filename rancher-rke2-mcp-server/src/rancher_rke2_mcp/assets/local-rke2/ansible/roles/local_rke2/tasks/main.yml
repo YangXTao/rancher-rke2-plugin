@@ -307,6 +307,16 @@
   changed_when: false
   when: inventory_hostname == groups['management_servers'][-1]
 
+- name: Count Ready local servers with whitespace-safe column parsing
+  ansible.builtin.command:
+    argv:
+      - awk
+      - 'NF >= 2 && $2 == "Ready" { count++ } END { print count+0 }'
+    stdin: "{{ rke2_nodes.stdout }}"
+  register: rke2_ready_server_count
+  changed_when: false
+  when: inventory_hostname == groups['management_servers'][-1]
+
 - name: Read healthy local etcd pods after the final join
   ansible.builtin.command: >-
     /var/lib/rancher/rke2/bin/kubectl -n kube-system get pods
@@ -329,7 +339,7 @@
   ansible.builtin.assert:
     that:
       - rke2_nodes.stdout_lines | length == 3
-      - rke2_nodes.stdout_lines | select('match', '^\S+[ \t]+Ready(?:[ \t]|$)') | list | length == 3
+      - rke2_ready_server_count.stdout | int == 3
       - rke2_etcd_pods.stdout_lines | length == 3
       - rke2_cilium_pods.stdout_lines | length >= 3
   when: inventory_hostname == groups['management_servers'][-1]

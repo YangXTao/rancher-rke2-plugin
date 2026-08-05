@@ -1,8 +1,8 @@
-# Rancher/RKE2 MCP Server Contract 0.8.3
+# Rancher/RKE2 MCP Server Contract 0.8.4
 
 ## Implemented execution boundary
 
-Server 0.8.3 provides `preflight_plan`, `get_preflight`, `start_run`,
+Server 0.8.4 provides `preflight_plan`, `get_preflight`, `start_run`,
 `start_workflow`, `get_run`, and `get_run_events`. Preflight resolves mounted
 Secret availability and performs TCP reachability tests only. If a plan includes
 `vm`, intended node SSH endpoints are correctly reported as `SKIPPED`; vCenter,

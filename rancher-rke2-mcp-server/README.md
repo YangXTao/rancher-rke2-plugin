@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.8.3
+# Rancher/RKE2 MCP Server 0.8.4
+
+## 0.8.4 whitespace-safe Local RKE2 health verification
+
+The final Local RKE2 node health check now tokenizes the `kubectl get nodes`
+table with `awk` and counts rows whose second column is exactly `Ready`. This
+accepts tabs and variable-width spaces without weakening the three-node health
+requirement.
 
 ## 0.8.3 Local RKE2 explicit runtime variables
 

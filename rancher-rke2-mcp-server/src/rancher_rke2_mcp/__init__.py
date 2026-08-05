@@ -1,3 +1,3 @@
 """Rancher/RKE2 MCP planning and VM execution server."""
 
-__version__ = "0.8.3"
+__version__ = "0.8.4"

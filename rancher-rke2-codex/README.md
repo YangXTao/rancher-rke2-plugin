@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.8.3
+# Rancher RKE2 Codex Plugin 0.8.4
+
+## 0.8.4 whitespace-safe Local RKE2 health verification
+
+The final Local RKE2 health check counts the whitespace-delimited `Ready` status
+column rather than relying on a fragile table regular expression.
 
 ## 0.8.3 Local RKE2 explicit runtime variables
 

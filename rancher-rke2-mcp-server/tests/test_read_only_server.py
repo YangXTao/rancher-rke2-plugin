@@ -364,6 +364,9 @@ def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
     playbook = (assets / "ansible" / "playbooks" / "local-rke2.yml").read_text(
         encoding="utf-8"
     )
+    tasks = (assets / "ansible" / "roles" / "local_rke2" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     executor_source = (PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py").read_text(
         encoding="utf-8"
     )
@@ -375,6 +378,8 @@ def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
     assert "INVENTORY_VARIABLE_INVALID" in verifier
     assert "vars_files:" in playbook
     assert "../group_vars/all.yml" in playbook
+    assert "Count Ready local servers with whitespace-safe column parsing" in tasks
+    assert "rke2_ready_server_count.stdout | int == 3" in tasks
 
 
 def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:
