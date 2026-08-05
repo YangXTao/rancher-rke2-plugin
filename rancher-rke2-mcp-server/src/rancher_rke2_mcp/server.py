@@ -9,7 +9,7 @@ import uvicorn
 
 from .auth import StaticBearerAuthMiddleware
 from .constants import SERVER_VERSION
-from .executor import LocalRke2Executor, NodeInitExecutor, VmExecutor
+from .executor import LocalRke2Executor, NodeInitExecutor, RancherExecutor, VmExecutor
 from .secrets import read_secret_setting
 from .service import ReadOnlyPlanningService
 from .storage import SQLiteStore
@@ -46,15 +46,20 @@ def create_server(
             secret_root=str(secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")),
             known_hosts_path=os.environ.get("RANCHER_RKE2_CONTROL_KNOWN_HOSTS", "/run/secrets/control_host_known_hosts"),
         ),
+        rancher_executor=RancherExecutor(
+            secret_root=str(secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")),
+            known_hosts_path=os.environ.get("RANCHER_RKE2_CONTROL_KNOWN_HOSTS", "/run/secrets/control_host_known_hosts"),
+        ),
     )
     server = MCPServer(
         name="rancher-rke2",
         title="Rancher/RKE2 Workflow Executor",
-        description="Validates YAML, creates plans, performs non-mutating preflight checks, and executes approved components or the VM-to-Local-RKE2 workflow through the SSH control host.",
+        description="Validates YAML, creates plans, performs non-mutating preflight checks, and executes approved VM, node-init, Local RKE2, or Rancher components through the SSH control host.",
         instructions=(
             "Preflight resolves only Secret availability and TCP reachability. "
             "start_run accepts one component plan with exact approval. start_workflow "
-            "accepts the ordered VM-to-node-init or VM-to-Local-RKE2 plan with one workflow approval, "
+            "accepts the ordered VM-to-node-init or VM-to-Local-RKE2 plan with one workflow approval; "
+            "the Rancher component reuses the newest successful Local RKE2 artifact for the same configuration. "
             "then waits for node TCP/22 readiness between stages. Both use strict "
             "known-host SSH verification and the declared control container."
         ),

@@ -189,6 +189,25 @@ class SQLiteStore:
             ).fetchone()
         return json.loads(row["run_json"]) if row else None
 
+    def latest_succeeded_component_run(
+        self, config_digest: str, component: str
+    ) -> dict[str, Any] | None:
+        """Return the newest successful component run for this config."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT run_json FROM runs
+                WHERE config_digest = ? AND state = 'SUCCEEDED'
+                ORDER BY created_at DESC
+                """,
+                (config_digest,),
+            ).fetchall()
+        for row in rows:
+            run = json.loads(row["run_json"])
+            if run.get("target_components") == [component]:
+                return run
+        return None
+
     def update_run(self, run: dict[str, Any]) -> None:
         payload = json.dumps(run, ensure_ascii=False, sort_keys=True)
         with self._connect() as connection:

@@ -1,0 +1,1 @@
+{{ rancher_helm_overrides.common | default({}) | combine(rancher_helm_overrides[rancher_chart_edition] | default({}), recursive=True) | to_nice_yaml(indent=2, sort_keys=False) }}

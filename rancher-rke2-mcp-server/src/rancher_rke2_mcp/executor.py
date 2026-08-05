@@ -556,3 +556,145 @@ class LocalRke2Executor(VmExecutor):
             "registry_mirrors": mirrors,
             "registry_configs": configs,
         }
+
+
+class RancherExecutor(VmExecutor):
+    """Install Rancher and its independent L7 endpoint after Local RKE2.
+
+    The component receives only secret *references* from MCP.  It resolves the
+    values immediately into a mode-0600 run directory on the SSH control host,
+    runs the packaged Rancher skill assets inside the persistent control
+    container, and leaves the existing Local RKE2 kubeconfig in place.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.assets_root = Path(__file__).parent / "assets" / "rancher"
+
+    def submit(self, *, config: dict[str, Any], run_id: str,
+               on_started: Callable[[str], None],
+               on_complete: Callable[[ExecutionResult], None]) -> None:
+        Thread(target=self._run_and_report, args=(config, run_id, on_started, on_complete), daemon=True,
+               name=f"rancher-rke2-rancher-{run_id[-8:]}").start()
+
+    def _run_and_report(self, config: dict[str, Any], run_id: str,
+                        on_started: Callable[[str], None],
+                        on_complete: Callable[[ExecutionResult], None]) -> None:
+        artifact_path = f"{str(config['run']['workspace']).rstrip('/')}/runs/{run_id}/rancher"
+        try:
+            on_started(run_id)
+            self.execute(config, artifact_path)
+        except Exception:
+            LOGGER.exception("Rancher execution failed for run %s", run_id)
+            on_complete(ExecutionResult(run_id, False, "RANCHER_EXECUTION_FAILED", artifact_path))
+            return
+        on_complete(ExecutionResult(run_id, True, "RANCHER_SUCCEEDED", artifact_path))
+
+    def execute(self, config: dict[str, Any], artifact_path: str) -> None:
+        source = str(config.get("_rancher_kubeconfig_source", ""))
+        if not source.startswith("/"):
+            raise ValueError("A successful Local RKE2 kubeconfig artifact is required before Rancher")
+        self._run_rancher(config, artifact_path)
+
+    def _run_rancher(self, config: dict[str, Any], artifact_path: str) -> None:
+        import paramiko
+
+        control = config["execution"]["control_host"]
+        client = paramiko.SSHClient()
+        client.load_host_keys(str(self.known_hosts_path))
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        password = DockerSecretResolver(self.secret_root).resolve(control["password_ref"])
+        try:
+            client.connect(hostname=str(control["address"]), port=int(control["port"]),
+                           username=str(control["username"]), password=password,
+                           allow_agent=False, look_for_keys=False, timeout=15,
+                           banner_timeout=15, auth_timeout=15)
+            self._upload_rancher_bundle(client, config, artifact_path)
+            container = config["execution"]["container"]
+            command = " ".join(shlex.quote(value) for value in (
+                "bash", f"{artifact_path}/rancher-runner.sh", artifact_path,
+                str(container["name"]), str(container["image"]), str(container["strategy"]),
+                str(config["downloads"]["software_root"]), str(config["run"]["workspace"]),
+                str(config["downloads"]["mode"])))
+            _, stdout, stderr = client.exec_command(command, timeout=7200)
+            exit_status = stdout.channel.recv_exit_status()
+            stdout.read(); stderr.read()
+            if exit_status != 0:
+                raise RuntimeError("remote Rancher runner failed")
+        finally:
+            client.close()
+
+    def _upload_rancher_bundle(self, client: Any, config: dict[str, Any], run_dir: str) -> None:
+        sftp = client.open_sftp()
+        try:
+            self._mkdirs(sftp, run_dir)
+            for source in self.assets_root.rglob("*"):
+                if source.is_file():
+                    remote = f"{run_dir}/{source.relative_to(self.assets_root).as_posix()}"
+                    self._mkdirs(sftp, remote.rsplit("/", 1)[0])
+                    sftp.put(str(source), remote)
+                    if source.suffix in {".sh", ".py"}:
+                        sftp.chmod(remote, 0o700)
+            self._put_text(sftp, f"{run_dir}/.dependency.env", self._dependency_env(config), mode=0o600)
+            self._mkdirs(sftp, f"{run_dir}/ansible/inventory")
+            self._mkdirs(sftp, f"{run_dir}/ansible/group_vars")
+            self._mkdirs(sftp, f"{run_dir}/secrets")
+            self._put_text(sftp, f"{run_dir}/ansible/inventory/hosts.yml",
+                           json.dumps(self._rancher_inventory(config), ensure_ascii=False, indent=2) + "\n", mode=0o600)
+            self._put_text(sftp, f"{run_dir}/ansible/group_vars/all.yml",
+                           json.dumps(self._rancher_group_vars(config, run_dir), ensure_ascii=False, indent=2) + "\n", mode=0o600)
+            resolver = DockerSecretResolver(self.secret_root)
+            self._put_text(sftp, f"{run_dir}/secrets/rancher-bootstrap-password",
+                           resolver.resolve(config["rancher"]["bootstrap_password_ref"]) + "\n", mode=0o600)
+        finally:
+            sftp.close()
+
+    def _rancher_inventory(self, config: dict[str, Any]) -> dict[str, Any]:
+        resolver = DockerSecretResolver(self.secret_root)
+        node_password = resolver.resolve(config["node_access"]["password_ref"])
+        control = config["execution"]["control_host"]
+        lb = config["nodes"]["management"]["load_balancer"]
+        return {"all": {"vars": {"ansible_connection": "paramiko"}, "children": {
+            "rancher_lb": {"hosts": {str(lb["hostname"]): {"ansible_host": str(lb["ip"]),
+                "ansible_user": str(config["node_access"]["username"]), "ansible_password": node_password,
+                "ansible_become_password": node_password}}},
+            "control_host": {"hosts": {"automation-control": {"ansible_host": str(control["address"]),
+                "ansible_port": int(control["port"]), "ansible_user": str(control["username"]),
+                "ansible_password": resolver.resolve(control["password_ref"]),
+                "ansible_become_password": resolver.resolve(control["password_ref"])}}},
+        }}}
+
+    def _rancher_group_vars(self, config: dict[str, Any], run_dir: str) -> dict[str, Any]:
+        rancher = config["rancher"]
+        registry = config["registry"]
+        lb = config["nodes"]["management"]["load_balancer"]
+        servers = config["nodes"]["management"]["servers"]
+        resolver = DockerSecretResolver(self.secret_root)
+        version = str(config["versions"]["rancher"])
+        enterprise = version.endswith("-ent")
+        registry_auth = bool(registry.get("username") and registry.get("password_ref"))
+        return {
+            "automation_run_id": run_dir.rstrip("/").rsplit("/runs/", 1)[-1].rsplit("/", 1)[0],
+            "rancher_version": version, "rancher_base_version": version.removesuffix("-ent"),
+            "rancher_chart_edition": "enterprise" if enterprise else "standard",
+            "rancher_download_mode": config["downloads"]["mode"],
+            "rancher_software_root": config["downloads"]["software_root"],
+            "rancher_rke2_version": config["versions"]["rke2_management"],
+            "rancher_hostname": str(lb["ip"]), "rancher_access_mode": "ip-compatibility",
+            "rancher_lb_ip": str(lb["ip"]), "rancher_replicas": int(rancher["replicas"]),
+            "rancher_http_nodeport": int(rancher["nodeport"]),
+            "rancher_run_root": run_dir,
+            "rancher_kubeconfig": config["_rancher_kubeconfig_source"],
+            "rancher_bootstrap_password_file": f"{run_dir}/secrets/rancher-bootstrap-password",
+            "rancher_certificate": {"source": "generate", "validity_days": 3650,
+                "ca_file": f"{run_dir}/cert/output/cacerts.pem", "cert_file": f"{run_dir}/cert/output/tls.crt",
+                "key_file": f"{run_dir}/cert/output/tls.key", "ip_sans": [str(lb["ip"])]},
+            "rancher_chart_path": f"{config['downloads']['software_root'].rstrip('/')}/rancher/rancher-{version}.tgz",
+            "rancher_chart_manifest_path": f"{config['downloads']['software_root'].rstrip('/')}/rancher/manifest.yaml",
+            "management_server_ips": [str(node["ip"]) for node in servers],
+            "registry_enabled": bool(registry.get("hostname")), "registry_hostname": str(registry.get("hostname") or ""),
+            "registry_insecure_skip_verify": bool(registry.get("insecure_skip_verify", False)),
+            "registry_auth_secret_enabled": registry_auth, "registry_username": str(registry.get("username") or ""),
+            "registry_password": resolver.resolve(registry["password_ref"]) if registry_auth else "",
+            "nginx_version": "1.27.0", "nginx_image": f"{registry.get('hostname')}/hub/nginx:1.27.0",
+        }

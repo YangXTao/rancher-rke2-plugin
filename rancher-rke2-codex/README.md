@@ -1,4 +1,11 @@
-# Rancher RKE2 Codex Plugin 0.8.4
+# Rancher RKE2 Codex Plugin 0.9.0
+
+## 0.9.0 Rancher component execution
+
+The Rancher component skill now guides a standalone approval-gated Rancher
+execution after Local RKE2 succeeds for the same configuration. The server
+finds and reuses that local kubeconfig artifact automatically; the user YAML
+and secret-reference boundary remain unchanged.
 
 ## 0.8.4 whitespace-safe Local RKE2 health verification
 

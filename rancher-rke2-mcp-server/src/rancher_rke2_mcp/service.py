@@ -22,7 +22,7 @@ from .constants import (
     SERVER_VERSION,
 )
 from .preflight import NonMutatingPreflight
-from .executor import ExecutionResult, LocalRke2Executor, NodeInitExecutor, VmExecutor
+from .executor import ExecutionResult, LocalRke2Executor, NodeInitExecutor, RancherExecutor, VmExecutor
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
@@ -75,6 +75,7 @@ class ReadOnlyPlanningService:
         executor: VmExecutor | None = None,
         node_executor: NodeInitExecutor | None = None,
         local_executor: LocalRke2Executor | None = None,
+        rancher_executor: RancherExecutor | None = None,
     ):
         self.store = store
         self.secret_root = secret_root
@@ -82,6 +83,7 @@ class ReadOnlyPlanningService:
         self.executor = executor
         self.node_executor = node_executor
         self.local_executor = local_executor
+        self.rancher_executor = rancher_executor
 
     def get_capabilities(self) -> dict[str, Any]:
         workflow_scopes = self._workflow_scopes()
@@ -103,6 +105,7 @@ class ReadOnlyPlanningService:
                     (self.executor is not None and self.executor.ready())
                     or (self.node_executor is not None and self.node_executor.ready())
                     or (self.local_executor is not None and self.local_executor.ready())
+                    or (self.rancher_executor is not None and self.rancher_executor.ready())
                 ),
                 "plaintext_credentials_compatible": False,
                 "secret_reference_schemes": list(SECRET_REFERENCE_SCHEMES),
@@ -110,7 +113,7 @@ class ReadOnlyPlanningService:
                 "preflight_network_checks": True,
                 "preflight_authentication_attempted": False,
                 "preflight_mutates_infrastructure": False,
-                "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor), ("local-rke2", self.local_executor)) if executor and executor.ready()],
+                "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor), ("local-rke2", self.local_executor), ("rancher", self.rancher_executor)) if executor and executor.ready()],
                 "workflow_execution_scope": workflow_scopes[-1] if workflow_scopes else [],
                 "workflow_execution_scopes": workflow_scopes,
                 "execution_backend": "ssh-control-container",
@@ -194,7 +197,7 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "state": "PLANNED",
             "read_only": True,
-            "executable": components in (["vm"], ["node-init"], ["local-rke2"], ["vm", "node-init"], ["vm", "node-init", "local-rke2"]),
+            "executable": components in (["vm"], ["node-init"], ["local-rke2"], ["rancher"], ["vm", "node-init"], ["vm", "node-init", "local-rke2"]),
             "execution_mode": "WORKFLOW" if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"]) else "COMPONENT",
             "config_digest": config_digest,
             "target_components": components,
@@ -504,14 +507,14 @@ class ReadOnlyPlanningService:
                     }
                 ],
             )
-        if plan["target_components"] not in (["vm"], ["node-init"], ["local-rke2"]):
+        if plan["target_components"] not in (["vm"], ["node-init"], ["local-rke2"], ["rancher"]):
             return _envelope(
                 ok=False,
                 state="UNSUPPORTED_SCOPE",
                 errors=[
                     {
                         "path": "plan_id",
-                        "message": "start_run accepts a single VM, node-init, or local-rke2 plan; use start_workflow for ordered multi-component plans.",
+                        "message": "start_run accepts a single VM, node-init, local-rke2, or rancher plan; use start_workflow for ordered multi-component plans.",
                     }
                 ],
             )
@@ -567,6 +570,7 @@ class ReadOnlyPlanningService:
             "vm": self.executor,
             "node-init": self.node_executor,
             "local-rke2": self.local_executor,
+            "rancher": self.rancher_executor,
         }[component]
         if selected_executor is None or not selected_executor.ready():
             return _envelope(
@@ -587,6 +591,17 @@ class ReadOnlyPlanningService:
                 state="NOT_FOUND",
                 errors=[{"path": "config_digest", "message": "Configuration is unavailable."}],
             )
+        if component == "rancher":
+            local_run = self.store.latest_succeeded_component_run(config_digest, "local-rke2")
+            if local_run is None:
+                return _envelope(
+                    ok=False,
+                    state="LOCAL_RKE2_ARTIFACT_REQUIRED",
+                    errors=[{"path": "local-rke2", "message": "A successful Local RKE2 component run with this configuration is required before Rancher."}],
+                )
+            config = dict(config)
+            workspace = str(config["run"]["workspace"]).rstrip("/")
+            config["_rancher_kubeconfig_source"] = f"{workspace}/runs/{local_run['run_id']}/local-rke2/kubeconfig/rke2.yaml"
         created_time = _now()
         created_at = _iso(created_time)
         run_id = _run_id(created_time)
@@ -645,6 +660,7 @@ class ReadOnlyPlanningService:
             "vm": self.executor,
             "node-init": self.node_executor,
             "local-rke2": self.local_executor,
+            "rancher": self.rancher_executor,
         }
         return all(executors[name] is not None and executors[name].ready() for name in components)
 

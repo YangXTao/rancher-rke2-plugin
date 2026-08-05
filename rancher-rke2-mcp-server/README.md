@@ -1,4 +1,14 @@
-# Rancher/RKE2 MCP Server 0.8.4
+# Rancher/RKE2 MCP Server 0.9.0
+
+## 0.9.0 approval-gated Rancher component
+
+`start_run` now supports the single `rancher` component after a successful
+`local-rke2` run using the same validated configuration. The executor reuses
+the durable Local RKE2 kubeconfig from that prior run, then runs the validated
+Rancher skill assets in the existing control container: Enterprise/standard
+artifacts, private-CA certificate, Helm install, NodePort `30080`, registry
+auth and the independent RancherLB Nginx endpoint. The YAML remains unchanged;
+no secret values or mutable artifact paths enter the MCP SQLite database.
 
 ## 0.8.4 whitespace-safe Local RKE2 health verification
 

@@ -1,0 +1,36 @@
+---
+- name: Publish only Rancher through the independent L7 load balancer
+  hosts: rancher_lb
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - role: rancher_lb
+
+- name: Verify the Rancher HTTPS endpoint
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify Rancher HTTPS through RancherLB and the approved private CA
+      ansible.builtin.command:
+        argv: [curl, --fail, --silent, --show-error, --cacert, "{{ rancher_certificate.ca_file }}", "https://{{ rancher_hostname }}/ping"]
+      register: rancher_external_ping
+      changed_when: false
+      when: rancher_private_ca
+
+    - name: Verify Rancher HTTPS through RancherLB and the system trust store
+      ansible.builtin.command:
+        argv: [curl, --fail, --silent, --show-error, "https://{{ rancher_hostname }}/ping"]
+      register: rancher_external_public_ping
+      changed_when: false
+      when: not rancher_private_ca
+
+    - name: Require Rancher ping response
+      ansible.builtin.assert:
+        that: >-
+          (rancher_external_ping.stdout | default('') | trim == 'pong')
+          or (rancher_external_public_ping.stdout | default('') | trim == 'pong')

@@ -21,8 +21,9 @@ named tools are available.
 2. Present Rancher edition/version, artifact mode, certificate source and IP SAN,
    replica count, NodePort, registry authentication, and RancherLB publication.
 3. Obtain exact plan approval before calling `start_run`.
-4. Track with `get_run` and `get_run_events`; use `resume_run` only for the same
-   persisted run.
+4. Track with `get_run` and `get_run_events`. A successful Local RKE2 run using
+   the same configuration is an enforced prerequisite; the server reuses its
+   kubeconfig artifact without requiring a YAML path.
 5. Require server verification for certificate chain, Rancher workloads, service
    on NodePort 30080, Rancher API readiness, and RancherLB HTTPS access.
 

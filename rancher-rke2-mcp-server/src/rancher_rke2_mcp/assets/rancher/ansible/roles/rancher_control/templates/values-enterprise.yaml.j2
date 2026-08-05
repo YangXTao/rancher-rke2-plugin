@@ -1,0 +1,23 @@
+hostname: "{{ rancher_hostname }}"
+replicas: {{ rancher_replicas }}
+tls: "{{ rancher_helm_tls }}"
+ingress:
+  enabled: false
+privateCA: {{ rancher_private_ca | bool | lower }}
+service:
+  type: "{{ rancher_helm_service_type }}"
+useBundledSystemChart: {{ rancher_use_bundled_system_chart | bool | lower }}
+additionalTrustedCAs: {{ rancher_enterprise_profile.additional_trusted_cas | bool | lower }}
+auditLog:
+  enabled: {{ rancher_enterprise_profile.audit_log.enabled | bool | lower }}
+  destination: "{{ rancher_enterprise_profile.audit_log.destination }}"
+  maxAge: {{ rancher_enterprise_profile.audit_log.max_age }}
+  level: {{ rancher_enterprise_profile.audit_log.level }}
+rancherImage: "{{ (registry_hostname ~ '/') if registry_enabled else '' }}{{ rancher_enterprise_profile.rancher_image_path }}"
+rancherImageTag: "v{{ rancher_base_version }}"
+postDelete:
+  image:
+    repository: "{{ (registry_hostname ~ '/') if registry_enabled else '' }}{{ rancher_enterprise_profile.post_delete_image_path }}"
+{% if registry_enabled %}
+systemDefaultRegistry: "{{ registry_hostname }}"
+{% endif %}
