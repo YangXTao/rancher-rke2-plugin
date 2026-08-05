@@ -21,6 +21,7 @@ class ExecutionResult:
     succeeded: bool
     code: str
     artifact_path: str
+    message: str = ""
 
 
 class VmExecutor:
@@ -586,7 +587,10 @@ class RancherExecutor(VmExecutor):
             self.execute(config, artifact_path)
         except Exception:
             LOGGER.exception("Rancher execution failed for run %s", run_id)
-            on_complete(ExecutionResult(run_id, False, "RANCHER_EXECUTION_FAILED", artifact_path))
+            on_complete(ExecutionResult(
+                run_id, False, "RANCHER_EXECUTION_FAILED", artifact_path,
+                f"Rancher runner failed; inspect {artifact_path}/rancher-install.log and {artifact_path}/rancher-lb.log.",
+            ))
             return
         on_complete(ExecutionResult(run_id, True, "RANCHER_SUCCEEDED", artifact_path))
 
@@ -620,7 +624,7 @@ class RancherExecutor(VmExecutor):
             exit_status = stdout.channel.recv_exit_status()
             stdout.read(); stderr.read()
             if exit_status != 0:
-                raise RuntimeError("remote Rancher runner failed")
+                raise RuntimeError(f"remote Rancher runner failed; inspect {artifact_path}")
         finally:
             client.close()
 

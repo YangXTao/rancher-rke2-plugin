@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.9.2
+# Rancher RKE2 Codex Plugin 0.9.3
+
+## 0.9.3 Local RKE2 artifact path fix
+
+Rancher now reuses the actual persistent Local RKE2 kubeconfig path and exposes
+safe server-side log locations when a Rancher runner fails.
 
 ## 0.9.2 Rancher Chart checkpoint fix
 

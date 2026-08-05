@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.9.2
+# Rancher/RKE2 MCP Server 0.9.3
+
+## 0.9.3 Local RKE2 kubeconfig artifact path
+
+Rancher now reuses the successful Local RKE2 kubeconfig from the durable
+`runs/<local-run>/kubeconfig/rke2.yaml` path. Failed Rancher runs also return
+their safe control-host log locations in the run state and event stream.
 
 ## 0.9.2 versioned Rancher Chart manifest
 

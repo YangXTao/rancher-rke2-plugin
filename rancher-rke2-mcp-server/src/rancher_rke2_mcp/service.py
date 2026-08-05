@@ -601,7 +601,7 @@ class ReadOnlyPlanningService:
                 )
             config = dict(config)
             workspace = str(config["run"]["workspace"]).rstrip("/")
-            config["_rancher_kubeconfig_source"] = f"{workspace}/runs/{local_run['run_id']}/local-rke2/kubeconfig/rke2.yaml"
+            config["_rancher_kubeconfig_source"] = f"{workspace}/runs/{local_run['run_id']}/kubeconfig/rke2.yaml"
         created_time = _now()
         created_at = _iso(created_time)
         run_id = _run_id(created_time)
@@ -990,7 +990,7 @@ class ReadOnlyPlanningService:
                 "component": run["target_components"][0],
                 "state": run["state"],
                 "checkpoint": "completed" if result.succeeded else "component_or_control_host_failed",
-                "message": result.code,
+                "message": result.message or result.code,
                 "artifact_path": result.artifact_path,
             }
         ]
@@ -1002,6 +1002,7 @@ class ReadOnlyPlanningService:
                 "type": result.code,
                 "component": run["target_components"][0],
                 "artifact_path": result.artifact_path,
+                "message": result.message or result.code,
             },
         )
 
