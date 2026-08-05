@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.9.1
+# Rancher/RKE2 MCP Server 0.9.2
+
+## 0.9.2 versioned Rancher Chart manifest
+
+The Rancher executor now supplies the exact versioned chart checkpoint path
+`/software/rancher/rancher-<version>.tgz.manifest`, matching both the standard
+and Enterprise artifact preparation scripts.
 
 ## 0.9.1 Local RKE2 artifact lookup fix
 

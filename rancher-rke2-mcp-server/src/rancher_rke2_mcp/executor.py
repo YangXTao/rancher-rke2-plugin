@@ -690,7 +690,7 @@ class RancherExecutor(VmExecutor):
                 "ca_file": f"{run_dir}/cert/output/cacerts.pem", "cert_file": f"{run_dir}/cert/output/tls.crt",
                 "key_file": f"{run_dir}/cert/output/tls.key", "ip_sans": [str(lb["ip"])]},
             "rancher_chart_path": f"{config['downloads']['software_root'].rstrip('/')}/rancher/rancher-{version}.tgz",
-            "rancher_chart_manifest_path": f"{config['downloads']['software_root'].rstrip('/')}/rancher/manifest.yaml",
+            "rancher_chart_manifest_path": f"{config['downloads']['software_root'].rstrip('/')}/rancher/rancher-{version}.tgz.manifest",
             "management_server_ips": [str(node["ip"]) for node in servers],
             "registry_enabled": bool(registry.get("hostname")), "registry_hostname": str(registry.get("hostname") or ""),
             "registry_insecure_skip_verify": bool(registry.get("insecure_skip_verify", False)),
