@@ -543,12 +543,7 @@ def _helm_command(config: dict[str, Any]) -> str:
             ]
         )
     else:
-        base.extend(
-            [
-                "--set service.type=ClusterIP",
-                '--set-string rancherImage="rancher/rancher"',
-            ]
-        )
+        base.extend(['--set-string rancherImage="rancher/rancher"'])
     return " \\\n  ".join(base)
 
 

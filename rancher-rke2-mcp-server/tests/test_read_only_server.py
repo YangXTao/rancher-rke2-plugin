@@ -1278,7 +1278,7 @@ def test_plugin_config_example_validates_and_expands_defaults(
     assert effective["downstream_cluster"]["registries"]["mirrors"]
 
 
-def test_runbook_standard_edition_uses_clusterip_and_rancher_nodeport(
+def test_runbook_standard_edition_omits_default_service_type(
     tmp_path: Path,
 ) -> None:
     secret_root = tmp_path / "secrets"
@@ -1296,7 +1296,8 @@ def test_runbook_standard_edition_uses_clusterip_and_rancher_nodeport(
     }
     manual, audit_result = render_and_audit(config, plan)
     assert audit_result["passed"] is True
-    assert "--set service.type=ClusterIP" in manual
+    assert "--set service.type=ClusterIP" not in manual
     assert "--set service.nodePort=" not in manual
+    assert "--set ingress.enabled=false" in manual
     assert "name: rancher-nodeport" in manual
     assert "nodePort: 30080" in manual

@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.10.10
+# Rancher/RKE2 MCP Server 0.10.11
+
+## 0.10.11 standard Rancher service type default
+
+The reference standard (non-`-ent`) Helm command no longer sets
+`service.type=ClusterIP`, relying on the chart default (ClusterIP) instead;
+`ingress.enabled=false` remains required because the chart default is true.
 
 ## 0.10.10 standard Rancher NodePort ownership fix
 

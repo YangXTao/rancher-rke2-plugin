@@ -130,7 +130,6 @@ rancher:
         --set tls=external \
         --set privateCA=true \
         --set ingress.enabled=false \
-        --set service.type=ClusterIP \
         --set useBundledSystemChart=true \
         --set additionalTrustedCAs=false \
         --set replicas=3 \
