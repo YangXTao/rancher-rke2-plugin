@@ -68,7 +68,8 @@ def create_server(
         instructions=(
             "Preflight resolves only Secret availability and TCP reachability. "
             "start_run accepts one component plan with exact approval. start_workflow "
-            "accepts the ordered VM-to-node-init or VM-to-Local-RKE2 plan with one workflow approval and "
+            "accepts the ordered VM-to-node-init, VM-to-Local-RKE2, or full "
+            "VM-to-downstream pipeline plan with one workflow approval and "
             "waits for node TCP/22 readiness between stages. "
             "the Rancher component reuses the newest successful Local RKE2 artifact for the same configuration. "
             "The downstream component reuses the newest successful Rancher private-CA certificate artifact "
@@ -122,12 +123,14 @@ def create_server(
         plan_id: str,
         format: str | None = None,
         output_profile: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
-        """Render an audited human-executable installation manual from a plan."""
+        """Render an audited manual from a plan, or from a run of that plan."""
         return service.render_runbook(
             plan_id,
             format=format or "markdown",
             output_profile=output_profile or "human-step-by-step",
+            run_id=run_id,
         )
 
     @server.tool()

@@ -1,4 +1,16 @@
-# Rancher/RKE2 MCP Server 0.10.8
+# Rancher/RKE2 MCP Server 0.10.9
+
+## 0.10.9 one-approval full pipeline workflow
+
+`start_workflow` now accepts the full pipeline
+`vm`, `node-init`, `local-rke2`, `rancher`, `downstream` with a single
+`APPROVE WORKFLOW <plan-id>` text. After VM creation it waits for every node
+TCP/22 readiness, then runs node-init, Local RKE2, Rancher (reusing the workflow
+kubeconfig), and downstream (reusing the workflow Rancher private-CA artifact)
+in the fixed order, stopping on the first failure. Single-component `start_run`
+plans remain available. `render_runbook` accepts an optional `run_id` so the
+manual can be rendered from an actual run when `installation_manual: ask`.
+The contract version is now 0.10.9.
 
 ## 0.10.8 audited installation manual delivery
 

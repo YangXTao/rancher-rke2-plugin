@@ -76,9 +76,11 @@ class RunningExecutor(QueuedExecutor):
 class WorkflowExecutor(QueuedExecutor):
     def __init__(self) -> None:
         self.artifact_paths: list[str] = []
+        self.configs: list[dict[str, object]] = []
 
-    def execute(self, _config: object, artifact_path: str) -> None:
+    def execute(self, config: object, artifact_path: str) -> None:
         self.artifact_paths.append(artifact_path)
+        self.configs.append(dict(config))  # type: ignore[arg-type]
 
 
 class CapturingDownstreamExecutor(QueuedExecutor):
@@ -238,7 +240,9 @@ def test_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
     assert "duplicate key" in result["errors"][0]["message"]
 
 
-def test_builds_non_executable_plan_without_secrets(tmp_path: Path) -> None:
+def test_all_plan_is_executable_full_pipeline_without_secrets(
+    tmp_path: Path,
+) -> None:
     service = make_service(tmp_path)
     validation = service.validate_config(EXAMPLE)
     digest = validation["data"]["config_digest"]
@@ -246,7 +250,9 @@ def test_builds_non_executable_plan_without_secrets(tmp_path: Path) -> None:
     assert result["ok"] is True
     plan = result["data"]["plan"]
     assert plan["read_only"] is True
-    assert plan["executable"] is False
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    assert plan["approval_text"] == f"APPROVE WORKFLOW {plan['plan_id']}"
     assert [item["component"] for item in plan["component_plans"]] == [
         "vm",
         "node-init",
@@ -454,6 +460,67 @@ def test_workflow_runs_local_rke2_after_node_init(tmp_path: Path) -> None:
         "SUCCEEDED", "SUCCEEDED", "SUCCEEDED"
     ]
     assert local_executor.artifact_paths[0].endswith("/local-rke2")
+
+
+def test_workflow_runs_full_pipeline_after_one_approval(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    executors = {
+        "vm": WorkflowExecutor(),
+        "node-init": WorkflowExecutor(),
+        "local-rke2": WorkflowExecutor(),
+        "rancher": WorkflowExecutor(),
+        "downstream": WorkflowExecutor(),
+    }
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=executors["vm"],
+        node_executor=executors["node-init"],
+        local_executor=executors["local-rke2"],
+        rancher_executor=executors["rancher"],
+        downstream_executor=executors["downstream"],
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    components = ["vm", "node-init", "local-rke2", "rancher", "downstream"]
+    plan = service.build_plan(digest, components)["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    assert plan["approval_text"] == f"APPROVE WORKFLOW {plan['plan_id']}"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="full-pipeline-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [item["component"] for item in stored["data"]["run"]["component_states"]] == (
+        components
+    )
+    assert all(
+        item["state"] == "SUCCEEDED"
+        for item in stored["data"]["run"]["component_states"]
+    )
+    for name in components:
+        assert executors[name].artifact_paths[0].endswith(f"/{name}")
+    rancher_config = executors["rancher"].configs[0]
+    assert str(rancher_config["_rancher_kubeconfig_source"]).endswith(
+        "/kubeconfig/rke2.yaml"
+    )
+    downstream_config = executors["downstream"].configs[0]
+    assert str(downstream_config["_rancher_ca_source"]).endswith(
+        "/rancher/cert/output/cacerts.pem"
+    )
 
 
 def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
@@ -712,6 +779,35 @@ def test_render_runbook_rejects_unknown_plan(tmp_path: Path) -> None:
     result = service.render_runbook("plan-does-not-exist")
     assert result["ok"] is False
     assert result["state"] == "NOT_FOUND"
+
+
+def test_render_runbook_with_run_id_uses_run_context(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=SuccessfulExecutor(),
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    started = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="vm-runbook-run-context",
+    )
+    run_id = started["data"]["run"]["run_id"]
+    result = service.render_runbook(plan["plan_id"], run_id=run_id)
+    assert result["ok"] is True
+    assert result["data"]["run_id"] == run_id
+    assert f"本次实施运行 {run_id} 已完成" in result["data"]["manual"]
+    assert result["data"]["artifact_path"].endswith(
+        f"runs/{run_id}/deliverables/RKE2_Rancher_Install_{run_id}.md"
+    )
 
 
 def test_post_run_delivers_runbook_when_installation_manual_true(
