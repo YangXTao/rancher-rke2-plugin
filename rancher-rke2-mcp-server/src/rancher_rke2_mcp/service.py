@@ -33,7 +33,7 @@ from .executor import (
     effective_config,
 )
 from .preflight import NonMutatingPreflight
-from .redaction import redact
+from .redaction import redact, redact_text
 from .runbook import render_and_audit
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
@@ -317,6 +317,114 @@ class ReadOnlyPlanningService:
             state="RENDERED" if audit_result["passed"] else "AUDIT_FAILED",
             data=data,
             warnings=warnings,
+        )
+
+    def read_run_log(
+        self,
+        run_id: str,
+        path: str,
+        *,
+        lines: int = 200,
+    ) -> dict[str, Any]:
+        """Read a redacted run log from the control host via SFTP."""
+        run = self.store.get_run(run_id)
+        if run is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "run_id", "message": "Unknown run ID."}],
+            )
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in ("", ".", "..") for part in path.split("/"))
+        ):
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "path",
+                        "message": "path must be a relative run artifact path without traversal.",
+                    }
+                ],
+            )
+        config = self.store.get_config(run["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The configuration for this run is unavailable.",
+                    }
+                ],
+            )
+        workspace = str(config["run"]["workspace"]).rstrip("/")
+        resolved = f"{workspace}/runs/{run_id}/{path}"
+        if not resolved.startswith(f"{workspace}/runs/{run_id}/"):
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "path",
+                        "message": "path escapes the run artifact directory.",
+                    }
+                ],
+            )
+        if self.executor is None or not self.executor.ready():
+            return _envelope(
+                ok=False,
+                state="EXECUTION_BACKEND_UNAVAILABLE",
+                errors=[
+                    {
+                        "path": "execution.control_host",
+                        "message": "A ready control-host executor is required to read run logs.",
+                    }
+                ],
+            )
+        try:
+            content = self.executor.read_artifact(
+                config, resolved, max_bytes=262144
+            )
+        except FileNotFoundError:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "path",
+                        "message": "The requested run artifact does not exist.",
+                    }
+                ],
+            )
+        except Exception:
+            LOGGER.exception("Run log read failed for run %s", run_id)
+            return _envelope(
+                ok=False,
+                state="READ_FAILED",
+                errors=[
+                    {
+                        "path": "path",
+                        "message": "The run artifact could not be read from the control host.",
+                    }
+                ],
+            )
+        selected = max(1, min(int(lines), 500))
+        tail = "\n".join(content.splitlines()[-selected:])
+        return _envelope(
+            ok=True,
+            state="READY",
+            data={
+                "run_id": run_id,
+                "path": path,
+                "lines": selected,
+                "content": redact_text(tail),
+            },
         )
 
     def build_plan(

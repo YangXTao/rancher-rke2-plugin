@@ -134,6 +134,17 @@ def create_server(
         )
 
     @server.tool()
+    def read_run_log(
+        run_id: str,
+        path: str,
+        lines: int | None = None,
+    ) -> dict[str, Any]:
+        """Read a redacted run log from the control host workspace."""
+        return service.read_run_log(
+            run_id, path, lines=lines or 200
+        )
+
+    @server.tool()
     def start_run(
         plan_id: str,
         config_digest: str,

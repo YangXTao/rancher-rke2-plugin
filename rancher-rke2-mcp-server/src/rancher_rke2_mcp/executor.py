@@ -409,6 +409,47 @@ class VmExecutor:
         finally:
             client.close()
 
+    def read_artifact(
+        self,
+        config: dict[str, Any],
+        remote_path: str,
+        *,
+        max_bytes: int = 262144,
+    ) -> str:
+        """Read one generated artifact from the control host via SFTP."""
+        import paramiko
+
+        control = config["execution"]["control_host"]
+        client = paramiko.SSHClient()
+        client.load_host_keys(str(self.known_hosts_path))
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        password = DockerSecretResolver(self.secret_root).resolve(
+            control["password_ref"]
+        )
+        try:
+            client.connect(
+                hostname=str(control["address"]),
+                port=int(control["port"]),
+                username=str(control["username"]),
+                password=password,
+                allow_agent=False,
+                look_for_keys=False,
+                timeout=15,
+                banner_timeout=15,
+                auth_timeout=15,
+            )
+            sftp = client.open_sftp()
+            try:
+                with sftp.file(remote_path, "r") as handle:
+                    data = handle.read(max_bytes + 1)
+            finally:
+                sftp.close()
+        finally:
+            client.close()
+        if len(data) > max_bytes:
+            data = data[-max_bytes:]
+        return data.decode("utf-8", errors="replace")
+
     def _asset_destination(self, source: Path, run_dir: str) -> str:
         """Place Terraform source files in the directory Terraform executes in.
 

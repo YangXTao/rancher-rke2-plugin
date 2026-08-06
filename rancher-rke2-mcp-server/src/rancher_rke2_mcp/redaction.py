@@ -13,6 +13,20 @@ SECRET_KEY_PARTS = (
     "private_key",
 )
 URL_CREDENTIALS = re.compile(r"(://)[^/@:\s]+:[^/@\s]+@")
+TEXT_SECRET_PATTERNS = (
+    (re.compile(r"(?i)(authorization:\s*bearer\s+)\S+"), r"\1***REDACTED***"),
+    (
+        re.compile(
+            r"(?i)([\w.-]*(?:token|password|passwd|api[_-]?key|private[_-]?key|secret)"
+            r"[\w.-]*\s*[=:]\s*)\S+"
+        ),
+        r"\1***REDACTED***",
+    ),
+    (
+        re.compile(r"(?i)(--(?:password|token|api[_-]?key|private[_-]?key)\s+)\S+"),
+        r"\1***REDACTED***",
+    ),
+)
 
 
 def redact(value: Any, key: str = "") -> Any:
@@ -32,3 +46,10 @@ def redact(value: Any, key: str = "") -> Any:
     if isinstance(value, str):
         return URL_CREDENTIALS.sub(r"\1***:***@", value)
     return value
+
+
+def redact_text(text: str) -> str:
+    """Redact credential fragments in free-text log output."""
+    for pattern, replacement in TEXT_SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text

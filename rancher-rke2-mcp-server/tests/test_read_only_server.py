@@ -92,6 +92,16 @@ class CapturingDownstreamExecutor(QueuedExecutor):
         self.submitted_config = dict(kwargs["config"])  # type: ignore[arg-type]
 
 
+class ArtifactExecutor(QueuedExecutor):
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def read_artifact(
+        self, _config: object, _path: str, *, max_bytes: int = 262144
+    ) -> str:
+        return self.content[-max_bytes:]
+
+
 def write_required_secrets(secret_root: Path) -> None:
     secret_root.mkdir()
     for name in (
@@ -306,8 +316,9 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
             assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
-            assert len(names) == 12
+            assert len(names) == 13
             assert "render_runbook" in names
+            assert "read_run_log" in names
             capability = await client.call_tool("get_capabilities", {})
             assert capability.structured_content["ok"] is True
             assert capability.structured_content["data"]["mutation_tools"] == [
@@ -813,6 +824,70 @@ def test_render_runbook_with_run_id_uses_run_context(tmp_path: Path) -> None:
     assert result["data"]["artifact_path"].endswith(
         f"runs/{run_id}/deliverables/RKE2_Rancher_Install_{run_id}.md"
     )
+
+
+def test_read_run_log_rejects_unknown_run_and_traversal(tmp_path: Path) -> None:
+    service = make_service(tmp_path, executor=ArtifactExecutor("irrelevant"))
+    missing = service.read_run_log("run-does-not-exist", "vm/install.log")
+    assert missing["ok"] is False
+    assert missing["state"] == "NOT_FOUND"
+
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    now = "2026-08-06T00:00:00Z"
+    service.store.save_run(
+        {
+            "run_id": "run-test-log00000000000000",
+            "plan_id": "plan-test-log",
+            "config_digest": digest,
+            "target_components": ["vm"],
+            "state": "RUNNING",
+            "created_at": now,
+            "updated_at": now,
+            "execution_backend": "ssh-control-container",
+            "component_states": [],
+        }
+    )
+    for unsafe in ("../secret", "/etc/passwd", "vm/../../x", "a\\b"):
+        result = service.read_run_log("run-test-log00000000000000", unsafe)
+        assert result["ok"] is False
+        assert result["state"] == "INVALID"
+
+
+def test_read_run_log_returns_redacted_tail(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    lines = [f"line {index}" for index in range(300)]
+    lines.append("rancher_token_key=super-secret-token-value")
+    lines.append("--password abc@123")
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=ArtifactExecutor("\n".join(lines)),
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    now = "2026-08-06T00:00:00Z"
+    service.store.save_run(
+        {
+            "run_id": "run-test-log00000000000001",
+            "plan_id": "plan-test-log",
+            "config_digest": digest,
+            "target_components": ["vm"],
+            "state": "RUNNING",
+            "created_at": now,
+            "updated_at": now,
+            "execution_backend": "ssh-control-container",
+            "component_states": [],
+        }
+    )
+    result = service.read_run_log(
+        "run-test-log00000000000001", "vm/install.log", lines=50
+    )
+    assert result["ok"] is True
+    content = result["data"]["content"]
+    assert content.count("\n") <= 50
+    assert "super-secret-token-value" not in content
+    assert "abc@123" not in content
+    assert "***REDACTED***" in content
 
 
 def test_post_run_delivers_runbook_when_installation_manual_true(

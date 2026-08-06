@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.10.12
+# Rancher/RKE2 MCP Server 0.10.13
+
+## 0.10.13 remote run log reading
+
+`read_run_log(run_id, path, lines)` reads a run log or artifact from the control
+host workspace over SFTP and returns the tail with credential fragments
+redacted, so failures can be diagnosed without the user pasting log files. The
+contract version is now 0.10.10.
 
 ## 0.10.12 RancherLB preflight deferral for VM plans
 

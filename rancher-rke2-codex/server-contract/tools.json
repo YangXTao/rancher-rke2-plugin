@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.10.9",
+  "contract_version": "0.10.10",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -50,6 +50,13 @@
       "required": ["plan_id"],
       "optional": ["format", "output_profile", "run_id"],
       "purpose": "Render an audited human-executable installation manual from an immutable plan (or from a run of that plan when run_id is supplied) and the expanded effective configuration, and write the audited deliverable to the control host workspace when the audit passes."
+    },
+    {
+      "name": "read_run_log",
+      "mutation": false,
+      "required": ["run_id", "path"],
+      "optional": ["lines"],
+      "purpose": "Read a redacted run log or artifact from the control host workspace via SFTP, so diagnostics do not require the user to paste log files."
     },
     {
       "name": "start_run",
