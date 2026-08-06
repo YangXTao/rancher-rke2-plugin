@@ -1,4 +1,9 @@
-# Rancher/RKE2 MCP Server 0.9.8
+# Rancher/RKE2 MCP Server 0.9.9
+
+## 0.9.9 NodePort verification target
+
+Both editions verify `rancher-nodeport` on port 30080. Enterprise Helm owns
+that Service, while standard automation owns it.
 
 ## 0.9.8 Enterprise NodePort field ownership migration
 

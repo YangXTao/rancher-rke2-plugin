@@ -1,4 +1,8 @@
-# Rancher RKE2 Codex Plugin 0.9.8
+# Rancher RKE2 Codex Plugin 0.9.9
+
+## 0.9.9 NodePort verification target
+
+Both editions verify `rancher-nodeport`; only the resource owner differs.
 
 ## 0.9.8 Enterprise NodePort field ownership migration
 
