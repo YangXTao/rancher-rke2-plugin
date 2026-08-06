@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.10.9
+# Rancher/RKE2 MCP Server 0.10.10
+
+## 0.10.10 standard Rancher NodePort ownership fix
+
+The reference Helm command and the rendered runbook now use
+`service.type=ClusterIP` for standard (non-`-ent`) Rancher and create the
+NodePort `rancher-nodeport` Service (30080) separately through kubectl, matching
+the validated skill assets. Enterprise keeps the Helm-managed NodePort Service.
 
 ## 0.10.9 one-approval full pipeline workflow
 

@@ -22,6 +22,7 @@ from rancher_rke2_mcp.executor import (
     LocalRke2Executor,
     VmExecutor,
 )
+from rancher_rke2_mcp.runbook import render_and_audit
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
@@ -1275,3 +1276,27 @@ def test_plugin_config_example_validates_and_expands_defaults(
     effective = result["data"]["effective_config"]
     assert effective["downstream_cluster"]["registries"]["enabled"] is True
     assert effective["downstream_cluster"]["registries"]["mirrors"]
+
+
+def test_runbook_standard_edition_uses_clusterip_and_rancher_nodeport(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    standard = EXAMPLE.replace('rancher: "2.13.6-ent"', 'rancher: "2.13.6"')
+    digest = service.validate_config(standard)["data"]["config_digest"]
+    config = service.store.get_config(digest)
+    assert config is not None
+    plan = {
+        "plan_id": "plan-standard-0000000000000000001",
+        "config_digest": digest,
+        "state": "PLANNED",
+        "target_components": ["all"],
+    }
+    manual, audit_result = render_and_audit(config, plan)
+    assert audit_result["passed"] is True
+    assert "--set service.type=ClusterIP" in manual
+    assert "--set service.nodePort=" not in manual
+    assert "name: rancher-nodeport" in manual
+    assert "nodePort: 30080" in manual

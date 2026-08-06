@@ -118,6 +118,8 @@ rancher:
   nodeport: 30080
   replicas: 3
   # Rancher Helm 安装参数参考（实际执行使用已验证 skill 资产中的同参数，此处仅作展示）
+  # standard：Helm 只建 ClusterIP 服务，NodePort 由独立的 rancher-nodeport Service
+  # （kubectl/Ansible 管理，30080）暴露；enterprise：NodePort 由 Helm 管理。
   helm_install_commands:
     standard: |
       helm upgrade --install rancher "${RANCHER_CHART}" \
@@ -128,7 +130,7 @@ rancher:
         --set tls=external \
         --set privateCA=true \
         --set ingress.enabled=false \
-        --set service.type=NodePort \
+        --set service.type=ClusterIP \
         --set useBundledSystemChart=true \
         --set additionalTrustedCAs=false \
         --set replicas=3 \

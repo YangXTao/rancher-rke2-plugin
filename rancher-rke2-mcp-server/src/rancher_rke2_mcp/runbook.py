@@ -525,23 +525,30 @@ def _helm_command(config: dict[str, Any]) -> str:
         "--set tls=external",
         "--set privateCA=true",
         "--set ingress.enabled=false",
-        "--set service.type=NodePort",
-        f"--set service.nodePort={config['rancher']['nodeport']}",
         "--set useBundledSystemChart=true",
         "--set additionalTrustedCAs=false",
         f"--kubeconfig {kubeconfig}",
         "--wait --timeout 15m",
     ]
     if rancher_version.endswith("-ent"):
-        base[6:6] = [
+        base.extend(
+            [
             "--set auditLog.enabled=true",
             "--set auditLog.destination=hostPath",
             "--set auditLog.maxAge=180",
             "--set auditLog.level=3",
+            "--set service.type=NodePort",
+            f"--set service.nodePort={config['rancher']['nodeport']}",
             '--set-string rancherImage="registry.rancher.cn/prime/rancher"',
-        ]
+            ]
+        )
     else:
-        base.append('--set-string rancherImage="rancher/rancher"')
+        base.extend(
+            [
+                "--set service.type=ClusterIP",
+                '--set-string rancherImage="rancher/rancher"',
+            ]
+        )
     return " \\\n  ".join(base)
 
 
@@ -841,11 +848,35 @@ def render_manual(
     )
     add(
         f"{first_master['hostname']}（{first_master['ip']}）",
-        "使用 Helm 安装 Rancher，NodePort 暴露。",
-        "Rancher Pod 就绪，rancher-nodeport 服务监听 30080。",
+        "使用 Helm 安装 Rancher。",
+        "Rancher Pod 就绪。",
         "查看 helm status rancher 与 Pod 日志后重试。",
         _helm_command(config),
     )
+    if not str(config["versions"]["rancher"]).endswith("-ent"):
+        add(
+            f"{first_master['hostname']}（{first_master['ip']}）",
+            "通过 kubectl 创建 rancher-nodeport Service（NodePort 30080）暴露 Rancher。",
+            "rancher-nodeport 服务存在并监听 30080。",
+            "检查选择器 app=rancher 与端口后重试。",
+            "kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f - <<'EOF'\n"
+            "apiVersion: v1\n"
+            "kind: Service\n"
+            "metadata:\n"
+            "  name: rancher-nodeport\n"
+            "  namespace: cattle-system\n"
+            "spec:\n"
+            "  type: NodePort\n"
+            "  selector:\n"
+            "    app: rancher\n"
+            "  ports:\n"
+            "    - name: http\n"
+            "      protocol: TCP\n"
+            "      port: 80\n"
+            "      targetPort: 80\n"
+            "      nodePort: 30080\n"
+            "EOF",
+        )
     add(
         f"{first_master['hostname']}（{first_master['ip']}）",
         f"验证 {rancher_url}/ping 与 NodePort 服务。",
