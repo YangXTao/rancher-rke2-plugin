@@ -1029,6 +1029,8 @@ def test_downstream_assets_require_mandatory_logs_and_registration_order() -> No
     assert "downstream_first_controlplane:downstream_first_worker" in playbook
     assert "serial: 1" in playbook
     assert "groups['downstream_nodes']" in playbook
+    assert "vars_files:" in playbook
+    assert "../group_vars/all.yml" in playbook
 
     tasks = (assets / "ansible" / "roles" / "downstream_register" / "tasks" / "main.yml").read_text(
         encoding="utf-8"

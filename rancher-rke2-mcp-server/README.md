@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.10.5
+# Rancher/RKE2 MCP Server 0.10.6
+
+## 0.10.6 downstream registration group variables
+
+The downstream registration playbook now loads the generated
+`../group_vars/all.yml` explicitly through `vars_files`, matching the Local RKE2
+and Rancher playbooks. Without it, Ansible resolved role defaults before the
+run-generated `automation_run_id` was available and registration stopped before
+any node was registered.
 
 ## 0.10.5 edition-aware Rancher mirror for both clusters
 

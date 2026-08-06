@@ -3,6 +3,8 @@
   hosts: downstream_first_controlplane:downstream_first_worker
   become: true
   gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
   roles:
     - role: downstream_register
 
@@ -11,6 +13,8 @@
   become: true
   gather_facts: true
   serial: 1
+  vars_files:
+    - ../group_vars/all.yml
   roles:
     - role: downstream_register
 
@@ -19,6 +23,8 @@
   become: true
   gather_facts: true
   serial: 1
+  vars_files:
+    - ../group_vars/all.yml
   roles:
     - role: downstream_register
 
@@ -26,6 +32,8 @@
   hosts: downstream_first_controlplane
   become: true
   gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Wait for every expected downstream node to become Ready
       ansible.builtin.command: >-
