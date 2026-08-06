@@ -16,7 +16,7 @@ from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
 from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
-from rancher_rke2_mcp.executor import ExecutionResult, VmExecutor
+from rancher_rke2_mcp.executor import DownstreamExecutor, ExecutionResult, VmExecutor
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
@@ -31,7 +31,7 @@ EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
 
 def make_service(
     tmp_path: Path, *, secret_root: Path | None = None, executor=None, node_executor=None,
-    local_executor=None,
+    local_executor=None, rancher_executor=None, downstream_executor=None,
 ) -> ReadOnlyPlanningService:
     return ReadOnlyPlanningService(
         SQLiteStore(tmp_path / "state.db"),
@@ -39,6 +39,8 @@ def make_service(
         executor=executor,
         node_executor=node_executor,
         local_executor=local_executor,
+        rancher_executor=rancher_executor,
+        downstream_executor=downstream_executor,
     )
 
 
@@ -72,6 +74,14 @@ class WorkflowExecutor(QueuedExecutor):
 
     def execute(self, _config: object, artifact_path: str) -> None:
         self.artifact_paths.append(artifact_path)
+
+
+class CapturingDownstreamExecutor(QueuedExecutor):
+    def __init__(self) -> None:
+        self.submitted_config: dict[str, object] | None = None
+
+    def submit(self, **kwargs: object) -> None:
+        self.submitted_config = dict(kwargs["config"])  # type: ignore[arg-type]
 
 
 def write_required_secrets(secret_root: Path) -> None:
@@ -110,6 +120,19 @@ def test_rejects_legacy_plaintext_credentials(tmp_path: Path) -> None:
     assert result["state"] == "INVALID"
     assert result["errors"][0]["path"] == "$"
     assert "plaintext secret fields are forbidden" in result["errors"][0]["message"]
+
+
+def test_accepts_kubernetes_secret_name_identifiers(tmp_path: Path) -> None:
+    result = make_service(tmp_path).validate_config(EXAMPLE)
+    assert result["ok"] is True
+    unsafe = EXAMPLE.replace(
+        "authConfigSecretName: myharbor-auth",
+        "authConfigSecretNameValue: myharbor-auth",
+        1,
+    )
+    rejected = make_service(tmp_path).validate_config(unsafe)
+    assert rejected["ok"] is False
+    assert "plaintext secret fields are forbidden" in json.dumps(rejected)
 
 
 def test_rejects_proxy_url_with_embedded_credentials(tmp_path: Path) -> None:
@@ -682,3 +705,187 @@ def test_authenticated_streamable_http_end_to_end(tmp_path: Path) -> None:
             await asyncio.wait_for(task, timeout=10)
 
     asyncio.run(scenario())
+
+
+def test_downstream_plan_is_executable_component(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    result = service.build_plan(digest, ["downstream"])
+    assert result["ok"] is True
+    plan = result["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "COMPONENT"
+    assert plan["approval_text"] == f"APPROVE PLAN {plan['plan_id']}"
+    details = plan["component_plans"][0]["details"]
+    assert details["cluster_name"] == "downstream"
+    assert details["registration_order"] == [
+        "first-controlplane",
+        "first-worker",
+        "remaining-controlplanes",
+        "remaining-workers",
+    ]
+
+
+def test_start_run_downstream_requires_successful_rancher_run(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    downstream_executor = CapturingDownstreamExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        downstream_executor=downstream_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    blocked = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="downstream-without-rancher",
+    )
+    assert blocked["ok"] is False
+    assert blocked["state"] == "RANCHER_ARTIFACT_REQUIRED"
+
+    store = service.store
+    now = "2026-08-06T02:00:00Z"
+    store.save_run(
+        {
+            "run_id": "run-20260806T020000Z-rancher000000",
+            "plan_id": plan["plan_id"],
+            "config_digest": digest,
+            "target_components": ["rancher"],
+            "state": "SUCCEEDED",
+            "created_at": now,
+            "updated_at": now,
+            "execution_backend": "ssh-control-container",
+            "component_states": [],
+        }
+    )
+    queued = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="downstream-after-rancher",
+    )
+    assert queued["ok"] is True
+    assert queued["state"] == "QUEUED"
+    assert downstream_executor.submitted_config is not None
+    assert downstream_executor.submitted_config["_rancher_ca_source"] == (
+        "/data/rancher/automation/runs/run-20260806T020000Z-rancher000000/"
+        "rancher/cert/output/cacerts.pem"
+    )
+
+
+def test_downstream_preflight_adds_rancher_lb_https_check(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        result = service.preflight_plan(plan["plan_id"])
+    assert result["ok"] is True
+    checks = result["data"]["preflight"]["checks"]
+    lb_check = next(
+        item for item in checks if item["name"] == "tcp.rancher_lb_https"
+    )
+    assert lb_check["status"] == "PASSED"
+    assert lb_check["target"] == {"host": "192.0.2.20", "port": 443}
+    node_checks = [
+        item for item in checks if item["name"].startswith("tcp.node_ssh.")
+    ]
+    assert len(node_checks) == 10
+    assert all(item["status"] == "PASSED" for item in node_checks)
+
+
+def test_downstream_executor_renders_generated_artifacts(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    config = service.store.get_config(digest)
+    assert config is not None
+    executor = DownstreamExecutor(secret_root=str(secret_root))
+
+    tfvars = json.loads(executor._downstream_tfvars(config))
+    assert tfvars["cluster_name"] == "downstream"
+    assert tfvars["rancher_api_url"] == "https://192.0.2.20"
+    assert tfvars["rancher_insecure"] is True
+    assert tfvars["kubernetes_version"] == config["versions"]["rke2_downstream"]
+    assert tfvars["rke_config"]["machinePools"] is None
+    assert tfvars["rke_config"]["machineGlobalConfig"]["cni"] == "cilium"
+    assert tfvars["rke_config"]["chartValues"]["rke2-cilium"]["kubeProxyReplacement"] is True
+    assert tfvars["registries"]["enabled"] is True
+    assert tfvars["registries"]["mirrors"][0]["rewrites"] == {"(^.+$)": "hub/$1"}
+
+    versions_tf = executor._versions_tf(config)
+    assert f'"13.1.4"' in versions_tf
+    assert "__RANCHER2_PROVIDER_VERSION__" not in versions_tf
+
+    inventory = executor._downstream_inventory(config)
+    children = inventory["all"]["children"]
+    assert list(children["downstream_first_controlplane"]["hosts"]) == ["master01"]
+    assert list(children["downstream_remaining_controlplanes"]["hosts"]) == [
+        "master02",
+        "master03",
+    ]
+    assert list(children["downstream_first_worker"]["hosts"]) == ["worker01"]
+    assert list(children["downstream_remaining_workers"]["hosts"]) == [
+        "worker02",
+        "worker03",
+    ]
+    assert len(children["downstream_nodes"]["hosts"]) == 6
+    assert inventory["all"]["vars"]["ansible_connection"] == "paramiko"
+    first_cp = children["downstream_first_controlplane"]["hosts"]["master01"]
+    assert first_cp["rancher_node_roles"] == ["etcd", "controlplane"]
+    assert children["downstream_first_worker"]["hosts"]["worker01"]["rancher_node_roles"] == [
+        "worker"
+    ]
+
+
+def test_downstream_assets_require_mandatory_logs_and_registration_order() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "downstream"
+    runner = (assets / "downstream-runner.sh").read_text(encoding="utf-8")
+    for log in (
+        "install-control-dependencies.log",
+        "provider-cache.log",
+        "rancher-api-token.log",
+        "terraform-init.log",
+        "terraform-apply.log",
+        "save-registration-command.log",
+        "downstream-register.log",
+    ):
+        assert log in runner
+    assert "run-logged.sh" in runner
+    assert "prepare-rancher-api-token.py" in runner
+    assert "save-downstream-registration-command.py" in runner
+    assert "terraform-with-rancher-token.sh" in runner
+    assert "TF_CLI_CONFIG_FILE=/software/terraform/provider-cache-config/rancher-rancher2.tfrc" in runner
+    assert "ansible-playbook playbooks/downstream-register.yml" in runner
+    assert "checkpoint.yaml" in runner
+
+    playbook = (assets / "ansible" / "playbooks" / "downstream-register.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "downstream_first_controlplane:downstream_first_worker" in playbook
+    assert "serial: 1" in playbook
+    assert "groups['downstream_nodes']" in playbook
+
+    tasks = (assets / "ansible" / "roles" / "downstream_register" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "--insecure" in tasks
+    assert "regex_search" in tasks
+    assert "is not none" in tasks
+
+    cluster_tf = (assets / "terraform" / "cluster.tf").read_text(encoding="utf-8")
+    assert "machinePools: null" not in cluster_tf
+    assert "auth_config_secret_name" in cluster_tf
+    assert "insecure_node_command" in (assets / "terraform" / "outputs.tf").read_text(
+        encoding="utf-8"
+    )

@@ -1,4 +1,21 @@
-# Rancher/RKE2 MCP Server 0.9.9
+# Rancher/RKE2 MCP Server 0.10.0
+
+## 0.10.0 downstream custom cluster execution
+
+`start_run` now supports the single `downstream` component after a successful
+`rancher` run using the same validated configuration. The executor reuses the
+durable Rancher private-CA certificate artifact from that prior run, then runs
+the validated downstream skill assets inside the existing control container:
+exact `rancher/rancher2` Provider mirror, Rancher `/ping` verification and admin
+API token, `rancher2_cluster_v2` creation with the user-customizable
+`downstream_cluster.rke_config` and `registries`, and role-ordered registration
+of every configured control-plane and worker node. Registration starts the first
+control-plane and first worker together, then processes remaining control-planes
+and remaining workers serially, and requires every node to report Ready.
+`downstream_cluster.rke_config` and `registries` are new optional configuration
+fields; omitted rkeConfig keys fall back to the validated reference defaults.
+Preflight for a downstream plan adds a non-mutating TCP check against the
+RancherLB HTTPS endpoint (443).
 
 ## 0.9.9 NodePort verification target
 

@@ -60,6 +60,11 @@ class NonMutatingPreflight:
                 node_ssh_required="vm" not in planned_components,
             )
         )
+        if "downstream" in planned_components:
+            lb = config["nodes"]["management"]["load_balancer"]
+            checks.append(
+                self._tcp_check("tcp.rancher_lb_https", str(lb["ip"]), 443)
+            )
         return checks
 
     def _known_hosts_check(self) -> dict[str, Any]:

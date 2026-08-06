@@ -1,4 +1,15 @@
-# Rancher RKE2 Codex Plugin 0.9.9
+# Rancher RKE2 Codex Plugin 0.10.0
+
+## 0.10.0 downstream custom cluster execution
+
+The downstream component skill now drives a standalone approval-gated downstream
+execution after Rancher succeeds for the same configuration. The server finds the
+durable Rancher private-CA certificate artifact automatically, creates
+`rancher2_cluster_v2` with the user-customizable `rkeConfig` and `registries`,
+and registers every custom node in the approved role order: the first
+control-plane and first worker together, then remaining control-planes, then
+remaining workers. Every configured node must report Ready before the run
+succeeds.
 
 ## 0.9.9 NodePort verification target
 

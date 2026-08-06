@@ -1,17 +1,21 @@
-# Rancher/RKE2 MCP Server Contract 0.9.9
+# Rancher/RKE2 MCP Server Contract 0.10.0
 
 ## Implemented execution boundary
 
-Server 0.9.9 provides `preflight_plan`, `get_preflight`, `start_run`,
+Server 0.10.0 provides `preflight_plan`, `get_preflight`, `start_run`,
 `start_workflow`, `get_run`, and `get_run_events`. Preflight resolves mounted
 Secret availability and performs TCP reachability tests only. If a plan includes
 `vm`, intended node SSH endpoints are correctly reported as `SKIPPED`; vCenter,
 registry, proxy, and control-host TCP checks remain required.
 
-`start_run` executes one approved component (`vm`, `node-init`, `local-rke2`, or
-`rancher`). Rancher requires a successful `local-rke2` component run with the
-same configuration digest; its kubeconfig is reused from that durable run
-artifact without being added to configuration or persisted in SQLite.
+`start_run` executes one approved component (`vm`, `node-init`, `local-rke2`,
+`rancher`, or `downstream`). Rancher requires a successful `local-rke2` component
+run with the same configuration digest; its kubeconfig is reused from that
+durable run artifact without being added to configuration or persisted in
+SQLite. Downstream requires a successful `rancher` component run with the same
+configuration digest; its private-CA certificate artifact is reused to verify
+the Rancher API before `rancher2_cluster_v2` creation and role-ordered node
+registration. A downstream plan also preflights the RancherLB HTTPS endpoint.
 `start_workflow` executes only an immutable ordered `vm` → `node-init` or
 `vm` → `node-init` → `local-rke2` plan. Both require exact approval text, the
 matching digest, a current `PASSED` preflight, and an idempotency key. Execution

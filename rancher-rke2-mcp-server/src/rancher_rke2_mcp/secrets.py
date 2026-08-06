@@ -21,6 +21,12 @@ PLAINTEXT_SECRET_KEY_PARTS = (
     "api_key",
 )
 
+# Rancher2 Terraform registries entries carry Kubernetes Secret *names*, which
+# are identifiers such as ``myharbor-auth`` and never credential material.
+NON_CREDENTIAL_SECRET_NAME_KEYS = frozenset(
+    {"authconfigsecretname", "tlssecretname"}
+)
+
 
 def ensure_reference_only_config(value: Any, path: str = "$") -> None:
     """Reject plaintext secret fields and credential-bearing URLs recursively."""
@@ -32,6 +38,7 @@ def ensure_reference_only_config(value: Any, path: str = "$") -> None:
             if (
                 any(part in lowered for part in PLAINTEXT_SECRET_KEY_PARTS)
                 and not lowered.endswith("_ref")
+                and lowered not in NON_CREDENTIAL_SECRET_NAME_KEYS
             ):
                 raise ValueError(
                     f"{item_path}: plaintext secret fields are forbidden; "
