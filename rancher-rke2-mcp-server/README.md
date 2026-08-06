@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.10.14
+# Rancher/RKE2 MCP Server 0.10.15
+
+## 0.10.15 VM apt proxy fix
+
+The VM dependency installer now passes `-o Acquire::http::Proxy` and
+`Acquire::https::Proxy` from the configured download proxy to `apt-get update`
+and the package install, and passes `--proxy` to the Terraform archive download.
+The other component installers already used the proxy.
 
 ## 0.10.14 Local RKE2 readiness wait
 

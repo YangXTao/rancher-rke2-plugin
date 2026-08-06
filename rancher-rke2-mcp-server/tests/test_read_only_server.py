@@ -714,6 +714,8 @@ def test_vm_proxy_environment_is_limited_to_dependency_downloads() -> None:
     assert "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy" in runner
     assert "def _dependency_env" in executor_source
     assert "Terraform talks directly to vCenter" in executor_source
+    assert 'Acquire::http::Proxy=$HTTP_PROXY' in installer
+    assert '--proxy "$HTTP_PROXY"' in installer
 
 
 def test_vm_provider_cache_uses_persistent_filesystem_mirror() -> None:
