@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.10.3
+# Rancher/RKE2 MCP Server 0.10.4
+
+## 0.10.4 edition-aware Rancher mirror default
+
+The reference downstream registries no longer add a Docker Hub `hub/$1`
+rewrite, and the Rancher mirror hostname follows the Rancher edition:
+`registry.rancher.cn` for `-ent` versions and `registry.rancher.com` otherwise.
+The Rancher mirror entry carries no rewrites, matching the validated reference.
 
 ## 0.10.3 versions.tf quoting fix
 

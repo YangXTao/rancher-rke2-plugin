@@ -932,14 +932,41 @@ def test_downstream_executor_uses_reference_registries_when_unset(
         "k8s.gcr.io",
         "quay.io",
         "registry.k8s.io",
-        "registry.rancher.com",
+        "registry.rancher.cn",
         "registry.suse.com",
     }
     assert mirrors["docker.io"]["endpoints"] == [
         "https://registry.example.internal"
     ]
-    assert mirrors["docker.io"]["rewrites"] == {"(^.+$)": "hub/$1"}
+    assert "rewrites" not in mirrors["docker.io"]
     assert mirrors["ghcr.io"]["endpoints"] == ["https://ghcr.zscr.io"]
+    assert mirrors["registry.rancher.cn"]["endpoints"] == [
+        "https://registry.example.internal"
+    ]
+    assert "rewrites" not in mirrors["registry.rancher.cn"]
+
+
+def test_downstream_default_rancher_mirror_follows_edition(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    marker = "  registration:\n"
+    _, _, rest = tail.partition(marker)
+    minimal = head + marker + rest
+    standard = minimal.replace('rancher: "2.13.6-ent"', 'rancher: "2.13.6"')
+    digest = service.validate_config(standard)["data"]["config_digest"]
+    config = service.store.get_config(digest)
+    assert config is not None
+    executor = DownstreamExecutor(secret_root=str(secret_root))
+    mirrors = {
+        item["hostname"]: item
+        for item in json.loads(executor._downstream_tfvars(config))["registries"][
+            "mirrors"
+        ]
+    }
+    assert "registry.rancher.com" in mirrors
+    assert "registry.rancher.cn" not in mirrors
 
 
 def test_downstream_assets_require_mandatory_logs_and_registration_order() -> None:

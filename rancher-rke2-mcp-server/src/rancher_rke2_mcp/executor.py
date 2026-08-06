@@ -1024,6 +1024,12 @@ class DownstreamExecutor(RancherExecutor):
         insecure = bool(
             config.get("registry", {}).get("insecure_skip_verify", True)
         )
+        rancher_version = str(config.get("versions", {}).get("rancher", ""))
+        rancher_registry = (
+            "registry.rancher.cn"
+            if rancher_version.endswith("-ent")
+            else "registry.rancher.com"
+        )
         return {
             "enabled": True,
             "systemDefaultRegistry": "",
@@ -1040,7 +1046,6 @@ class DownstreamExecutor(RancherExecutor):
                 {
                     "hostname": "docker.io",
                     "endpoints": [f"https://{harbor}"],
-                    "rewrites": {"(^.+$)": "hub/$1"},
                 },
                 {
                     "hostname": "dp.apps.rancher.io",
@@ -1068,9 +1073,8 @@ class DownstreamExecutor(RancherExecutor):
                     "rewrites": {"(^.+$)": "registry.k8s.io/$1"},
                 },
                 {
-                    "hostname": "registry.rancher.com",
+                    "hostname": rancher_registry,
                     "endpoints": [f"https://{harbor}"],
-                    "rewrites": {"(^.+$)": "registry.rancher.com/$1"},
                 },
                 {
                     "hostname": "registry.suse.com",
