@@ -554,6 +554,23 @@ class ReadOnlyPlanningService:
             DockerSecretResolver(self.secret_root),
             timeout_seconds=self.preflight_timeout_seconds,
         ).run(config, planned_components=plan["target_components"])
+        warnings = [
+            "Preflight only resolves Secret availability and opens TCP connections; it does not authenticate, execute commands, or change infrastructure."
+        ]
+        if (
+            "downstream" in plan["target_components"]
+            and "vm" not in plan["target_components"]
+            and self.store.latest_succeeded_component_run(
+                plan["config_digest"], "rancher"
+            )
+            is None
+        ):
+            checks = self._defer_rancher_lb_check(checks)
+            warnings.append(
+                "No successful Rancher run exists yet for this configuration; "
+                "the RancherLB HTTPS check is deferred until Rancher has run. "
+                "start_run still requires the Rancher prerequisite."
+            )
         failed = sum(item["status"] == "FAILED" for item in checks)
         passed = sum(item["status"] == "PASSED" for item in checks)
         skipped = sum(item["status"] == "SKIPPED" for item in checks)
@@ -576,10 +593,26 @@ class ReadOnlyPlanningService:
             ok=failed == 0,
             state=state,
             data={"preflight": preflight},
-            warnings=[
-                "Preflight only resolves Secret availability and opens TCP connections; it does not authenticate, execute commands, or change infrastructure."
-            ],
+            warnings=warnings,
         )
+
+    @staticmethod
+    def _defer_rancher_lb_check(
+        checks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Reclassify the RancherLB HTTPS check while Rancher has not run yet."""
+        for check in checks:
+            if (
+                check.get("name") == "tcp.rancher_lb_https"
+                and check.get("status") == "FAILED"
+            ):
+                check["status"] = "SKIPPED"
+                check["message"] = (
+                    "RancherLB HTTPS check is deferred because no successful "
+                    "Rancher run exists yet for this configuration."
+                )
+                break
+        return checks
 
     def get_preflight(self, preflight_id: str) -> dict[str, Any]:
         preflight = self.store.get_preflight(preflight_id)

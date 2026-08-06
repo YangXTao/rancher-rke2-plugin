@@ -12,7 +12,7 @@
         ]
       },
       {
-        "matcher": "^mcp__rancher[-_]rke2__(start_run|resume_run|retry_component|cancel_run|destroy_vm_set)$",
+        "matcher": "^mcp__rancher[-_]rke2__(start_run|start_workflow|resume_run|retry_component|cancel_run|destroy_vm_set)$",
         "hooks": [
           {
             "type": "command",

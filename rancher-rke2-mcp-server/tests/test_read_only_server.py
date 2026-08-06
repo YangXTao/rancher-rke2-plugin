@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import re
@@ -1106,20 +1107,62 @@ def test_downstream_preflight_adds_rancher_lb_https_check(tmp_path: Path) -> Non
     service = make_service(tmp_path, secret_root=secret_root)
     digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
     plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
-    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+
+    def lb_unreachable(address: object, timeout: object = None) -> object:
+        host, port = address  # type: ignore[misc]
+        if host == "192.0.2.20" and port == 443:
+            raise ConnectionRefusedError("RancherLB is not up yet")
+        return nullcontext()
+
+    with patch(
+        "rancher_rke2_mcp.preflight.socket.create_connection",
+        side_effect=lb_unreachable,
+    ):
         result = service.preflight_plan(plan["plan_id"])
     assert result["ok"] is True
     checks = result["data"]["preflight"]["checks"]
     lb_check = next(
         item for item in checks if item["name"] == "tcp.rancher_lb_https"
     )
-    assert lb_check["status"] == "PASSED"
+    # No successful Rancher run exists yet, so the check is deferred.
+    assert lb_check["status"] == "SKIPPED"
     assert lb_check["target"] == {"host": "192.0.2.20", "port": 443}
+    assert any(
+        "deferred until Rancher has run" in item
+        for item in result["warnings"]
+    )
     node_checks = [
         item for item in checks if item["name"].startswith("tcp.node_ssh.")
     ]
     assert len(node_checks) == 6
     assert all(item["status"] == "PASSED" for item in node_checks)
+
+    # After a successful Rancher run, the check is a real reachability test.
+    now = "2026-08-06T00:00:00Z"
+    service.store.save_run(
+        {
+            "run_id": "run-test-rancher-success",
+            "plan_id": plan["plan_id"],
+            "config_digest": digest,
+            "target_components": ["rancher"],
+            "state": "SUCCEEDED",
+            "created_at": now,
+            "updated_at": now,
+            "execution_backend": "ssh-control-container",
+            "component_states": [],
+        }
+    )
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        result_after = service.preflight_plan(plan["plan_id"])
+    checks_after = result_after["data"]["preflight"]["checks"]
+    lb_after = next(
+        item for item in checks_after if item["name"] == "tcp.rancher_lb_https"
+    )
+    assert lb_after["status"] == "PASSED"
+    assert not any(
+        "deferred until Rancher has run" in item
+        for item in result_after["warnings"]
+    )
 
 
 def test_downstream_executor_renders_generated_artifacts(tmp_path: Path) -> None:
@@ -1359,6 +1402,18 @@ def test_plugin_config_example_validates_and_expands_defaults(
     effective = result["data"]["effective_config"]
     assert effective["downstream_cluster"]["registries"]["enabled"] is True
     assert effective["downstream_cluster"]["registries"]["mirrors"]
+
+
+def test_hooks_cover_start_workflow_mutation() -> None:
+    hooks_text = (
+        PROJECT_ROOT.parent / "rancher-rke2-codex" / "hooks" / "hooks.json"
+    ).read_text(encoding="utf-8")
+    assert (
+        "start_run|start_workflow|resume_run|retry_component|cancel_run|destroy_vm_set"
+        in hooks_text
+    )
+    assert "validate_config" in hooks_text
+    assert "render_runbook" not in hooks_text
 
 
 def test_runbook_standard_edition_omits_default_service_type(

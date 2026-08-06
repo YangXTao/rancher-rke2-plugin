@@ -48,7 +48,8 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
    the exact user approval text returned by the selected plan.
 13. Track progress only through available tools such as `get_run` and
    `get_run_events`. A workflow stops on a failed dependency or node-readiness gate;
-   never retry it automatically.
+   never retry it automatically. On failure, use `read_run_log` to inspect the
+   failed component's mandatory logs instead of asking the user to paste them.
 14. Before declaring success, call `get_run` again and require run state
    `SUCCEEDED` plus successful required component verification.
 

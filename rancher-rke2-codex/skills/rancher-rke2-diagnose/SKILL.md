@@ -18,10 +18,13 @@ do not invent run state or evidence.
 2. Call `get_run` to identify the first failed or blocked component and its last
    successful checkpoint.
 3. Read only the relevant event window with `get_run_events`.
-4. Call `collect_diagnostics` for that component. Increase `depth` only when the
-   first evidence set is insufficient.
-5. Separate facts, server-reported findings, hypotheses, and missing evidence.
-6. Return the smallest remediation plan and identify which component skill would
+4. Call `read_run_log` for the failed component's mandatory logs (for example
+   `local-rke2/ansible-playbook.log`) to inspect redacted evidence directly from
+   the control host; increase `lines` only when the first window is insufficient.
+5. Call `collect_diagnostics` when the server reports it as available; otherwise
+   `read_run_log` is the evidence path.
+6. Separate facts, server-reported findings, hypotheses, and missing evidence.
+7. Return the smallest remediation plan and identify which component skill would
    own a later fix.
 
 When three or more evidence areas are independent, subagents may analyze them in

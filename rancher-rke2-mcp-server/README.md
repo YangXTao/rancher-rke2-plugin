@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.10.15
+# Rancher/RKE2 MCP Server 0.10.16
+
+## 0.10.16 dependency-aware RancherLB preflight
+
+For a standalone `downstream` plan, the RancherLB HTTPS (443) preflight check is
+reported as `SKIPPED` (with a warning) when no successful Rancher run exists yet
+for the same configuration, because RancherLB is created by the Rancher stage.
+`start_run` still enforces the Rancher prerequisite.
 
 ## 0.10.15 VM apt proxy fix
 
