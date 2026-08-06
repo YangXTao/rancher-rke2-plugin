@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.9.6
+# Rancher RKE2 Codex Plugin 0.9.7
+
+## 0.9.7 Enterprise NodePort ownership migration
+
+Enterprise Helm reconciliation safely removes only a legacy client-side apply
+annotation from a Helm-owned `rancher-nodeport` Service.
 
 ## 0.9.6 edition-specific NodePort ownership
 

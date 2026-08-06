@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.9.6
+# Rancher/RKE2 MCP Server 0.9.7
+
+## 0.9.7 Enterprise NodePort ownership migration
+
+Before an Enterprise Helm reconciliation, the server inspects any existing
+`rancher-nodeport` Service and removes only its legacy client-side apply
+annotation when that Service is confirmed to belong to the `rancher` Helm
+release. It never deletes or recreates the Service.
 
 ## 0.9.6 edition-specific NodePort ownership
 

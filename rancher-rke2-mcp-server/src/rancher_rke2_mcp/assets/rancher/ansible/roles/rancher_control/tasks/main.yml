@@ -265,6 +265,34 @@
   ansible.builtin.set_fact:
     rancher_selected_helm_command: "{{ rancher_helm_install_commands[rancher_chart_edition] }}"
 
+- name: Inspect the legacy Enterprise Rancher NodePort Service before Helm reconciliation
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", get, service, rancher-nodeport, -o, json]
+  register: rancher_legacy_nodeport
+  changed_when: false
+  failed_when: rancher_legacy_nodeport.rc not in [0, 1]
+  when: rancher_chart_edition == 'enterprise'
+
+- name: Require that the legacy Enterprise NodePort Service belongs to this Helm release
+  ansible.builtin.assert:
+    that:
+      - ((rancher_legacy_nodeport.stdout | from_json).metadata.labels['app.kubernetes.io/managed-by'] | default('')) == 'Helm'
+      - ((rancher_legacy_nodeport.stdout | from_json).metadata.labels.release | default('')) == rancher_helm_release_name
+    fail_msg: Refusing to alter a pre-existing rancher-nodeport Service not owned by the Rancher Helm release.
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+
+- name: Remove only the legacy client-side apply annotation before Enterprise Helm reconciliation
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", annotate, service, rancher-nodeport, kubectl.kubernetes.io/last-applied-configuration-]
+  register: rancher_legacy_nodeport_annotation
+  changed_when: "'annotated' in rancher_legacy_nodeport_annotation.stdout"
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+    - "'kubectl.kubernetes.io/last-applied-configuration' in ((rancher_legacy_nodeport.stdout | from_json).metadata.annotations | default({}))"
+
 - name: Install or upgrade Rancher with the exact configured Helm command
   ansible.builtin.shell: "{{ rancher_selected_helm_command }}"
   args:
