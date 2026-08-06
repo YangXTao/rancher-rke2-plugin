@@ -178,6 +178,14 @@ class RegistrationConfig(ExtensibleModel):
     )
 
 
+DOWNSTREAM_REGISTRIES_DEFAULT: dict[str, Any] = {
+    "enabled": False,
+    "systemDefaultRegistry": "",
+    "configs": [],
+    "mirrors": [],
+}
+
+
 class DownstreamClusterConfig(ExtensibleModel):
     name: str = Field(min_length=1)
     rke_config: dict[str, Any] = Field(
@@ -189,12 +197,7 @@ class DownstreamClusterConfig(ExtensibleModel):
         ),
     )
     registries: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "enabled": False,
-            "systemDefaultRegistry": "",
-            "configs": [],
-            "mirrors": [],
-        },
+        default_factory=lambda: dict(DOWNSTREAM_REGISTRIES_DEFAULT),
         description=(
             "Terraform registries object for the downstream cluster. Each "
             "submitted mirror is authoritative for its hostname."

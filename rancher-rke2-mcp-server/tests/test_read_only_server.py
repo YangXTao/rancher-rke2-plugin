@@ -135,6 +135,36 @@ def test_accepts_kubernetes_secret_name_identifiers(tmp_path: Path) -> None:
     assert "plaintext secret fields are forbidden" in json.dumps(rejected)
 
 
+def test_unset_downstream_fields_keep_legacy_config_digest_shape(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    marker = "  registration:\n"
+    _, _, rest = tail.partition(marker)
+    minimal = head + marker + rest
+    result = service.validate_config(minimal)
+    assert result["ok"] is True
+    normalized = service.store.get_config(result["data"]["config_digest"])
+    assert normalized is not None
+    assert sorted(normalized["downstream_cluster"].keys()) == [
+        "name",
+        "registration",
+    ]
+
+
+def test_set_downstream_fields_are_preserved_in_normalized_config(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    result = service.validate_config(EXAMPLE)
+    assert result["ok"] is True
+    normalized = service.store.get_config(result["data"]["config_digest"])
+    assert normalized is not None
+    assert "rke_config" in normalized["downstream_cluster"]
+    assert normalized["downstream_cluster"]["registries"]["enabled"] is True
+
+
 def test_rejects_proxy_url_with_embedded_credentials(tmp_path: Path) -> None:
     unsafe = EXAMPLE.replace(
         'proxy_url: ""',

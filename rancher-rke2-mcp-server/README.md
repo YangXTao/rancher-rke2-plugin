@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.10.0
+# Rancher/RKE2 MCP Server 0.10.1
+
+## 0.10.1 legacy config digest compatibility
+
+0.10.0 added optional `downstream_cluster.rke_config` and `registries` fields.
+Default values for unset fields no longer enter the normalized configuration, so
+an unchanged YAML produces the same config digest as 0.9.x and the
+Rancher-before-downstream artifact lookup still finds runs validated before the
+upgrade. Explicitly set values remain preserved in the digest and execution.
 
 ## 0.10.0 downstream custom cluster execution
 
