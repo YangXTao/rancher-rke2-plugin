@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.10.2
+# Rancher/RKE2 MCP Server 0.10.3
+
+## 0.10.3 versions.tf quoting fix
+
+The downstream `versions.tf` renderer wrapped the already-quoted template
+placeholder in another set of quotes (`""13.1.4""`), which is invalid HCL.
+The rendered file now contains exactly `version = "13.1.4"`.
 
 ## 0.10.2 reference downstream registries by default
 

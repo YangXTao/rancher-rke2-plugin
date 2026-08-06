@@ -1084,7 +1084,8 @@ class DownstreamExecutor(RancherExecutor):
         template = (self.assets_root / "terraform" / "versions.tf.tmpl").read_text(
             encoding="utf-8"
         )
-        version = json.dumps(str(config["versions"]["rancher2_provider"]))
+        # The template already wraps the placeholder in quotes.
+        version = str(config["versions"]["rancher2_provider"])
         return template.replace("__RANCHER2_PROVIDER_VERSION__", version)
 
     def _downstream_inventory(self, config: dict[str, Any]) -> dict[str, Any]:

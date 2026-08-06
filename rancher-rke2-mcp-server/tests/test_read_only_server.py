@@ -876,7 +876,8 @@ def test_downstream_executor_renders_generated_artifacts(tmp_path: Path) -> None
     assert tfvars["registries"]["mirrors"][0]["rewrites"] == {"(^.+$)": "hub/$1"}
 
     versions_tf = executor._versions_tf(config)
-    assert f'"13.1.4"' in versions_tf
+    assert 'version = "13.1.4"' in versions_tf
+    assert '""13.1.4""' not in versions_tf
     assert "__RANCHER2_PROVIDER_VERSION__" not in versions_tf
 
     inventory = executor._downstream_inventory(config)
