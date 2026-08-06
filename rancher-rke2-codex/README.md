@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.9.7
+# Rancher RKE2 Codex Plugin 0.9.8
+
+## 0.9.8 Enterprise NodePort field ownership migration
+
+The Enterprise migration safely transfers only the conflicting HTTP NodePort
+field name from legacy kubectl apply ownership to Helm.
 
 ## 0.9.7 Enterprise NodePort ownership migration
 

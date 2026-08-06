@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.9.7
+# Rancher/RKE2 MCP Server 0.9.8
+
+## 0.9.8 Enterprise NodePort field ownership migration
+
+For an existing Helm-owned Enterprise `rancher-nodeport` Service, the server
+uses server-side apply with field manager `helm` and force-conflicts only for
+the expected `80/TCP` port name (`http-80`). This transfers that one legacy
+field without deleting, recreating, or changing either NodePort.
 
 ## 0.9.7 Enterprise NodePort ownership migration
 

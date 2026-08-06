@@ -293,6 +293,24 @@
     - rancher_legacy_nodeport.rc == 0
     - "'kubectl.kubernetes.io/last-applied-configuration' in ((rancher_legacy_nodeport.stdout | from_json).metadata.annotations | default({}))"
 
+- name: Render the exact Enterprise Helm ownership migration patch
+  ansible.builtin.template:
+    src: rancher-nodeport-helm-ownership.yaml.j2
+    dest: "{{ rancher_rendered_dir }}/rancher-nodeport-helm-ownership.yaml"
+    mode: '0600'
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+
+- name: Transfer only the conflicting Enterprise NodePort port-name field to Helm
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", apply, --server-side, --field-manager=helm, --force-conflicts, -f, "{{ rancher_rendered_dir }}/rancher-nodeport-helm-ownership.yaml"]
+  register: rancher_nodeport_helm_ownership
+  changed_when: "'configured' in rancher_nodeport_helm_ownership.stdout"
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+
 - name: Install or upgrade Rancher with the exact configured Helm command
   ansible.builtin.shell: "{{ rancher_selected_helm_command }}"
   args:
