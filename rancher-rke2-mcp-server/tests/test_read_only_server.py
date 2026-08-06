@@ -596,8 +596,12 @@ def test_preflight_checks_secret_availability_and_tcp_without_exposing_values(
     assert preflight["non_mutating"] is True
     assert preflight["authentication_attempted"] is False
     assert preflight["summary"]["failed"] == 0
-    assert preflight["summary"]["skipped"] == 8
+    assert preflight["summary"]["skipped"] == 9
     assert any(item["name"] == "tcp.vsphere_https" for item in preflight["checks"])
+    lb_check = next(
+        item for item in preflight["checks"] if item["name"] == "tcp.rancher_lb_https"
+    )
+    assert lb_check["status"] == "SKIPPED"
     assert all(
         item["status"] == "SKIPPED"
         for item in preflight["checks"]

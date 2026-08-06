@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.10.11
+# Rancher/RKE2 MCP Server 0.10.12
+
+## 0.10.12 RancherLB preflight deferral for VM plans
+
+When a plan includes the `vm` component, the RancherLB HTTPS (443) preflight
+check is reported as `SKIPPED` instead of failing, because the LB is an intended
+resource that does not exist yet. Full-pipeline workflows can therefore pass
+preflight before VM creation.
 
 ## 0.10.11 standard Rancher service type default
 

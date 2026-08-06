@@ -62,9 +62,24 @@ class NonMutatingPreflight:
         )
         if "downstream" in planned_components:
             lb = config["nodes"]["management"]["load_balancer"]
-            checks.append(
-                self._tcp_check("tcp.rancher_lb_https", str(lb["ip"]), 443)
-            )
+            if "vm" in planned_components:
+                checks.append(
+                    self._check(
+                        name="tcp.rancher_lb_https",
+                        category="connectivity",
+                        status="SKIPPED",
+                        target={"host": str(lb["ip"]), "port": 443},
+                        message=(
+                            "RancherLB HTTPS check is deferred because this plan "
+                            "includes the VM component and the LB is an intended, "
+                            "not yet created resource."
+                        ),
+                    )
+                )
+            else:
+                checks.append(
+                    self._tcp_check("tcp.rancher_lb_https", str(lb["ip"]), 443)
+                )
         return checks
 
     def _known_hosts_check(self) -> dict[str, Any]:
