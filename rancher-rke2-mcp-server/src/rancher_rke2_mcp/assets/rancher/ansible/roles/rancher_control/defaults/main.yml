@@ -63,7 +63,7 @@ rancher_helm_install_commands:
       --set tls=external \
       --set privateCA=true \
       --set ingress.enabled=false \
-      --set service.type=NodePort \
+      --set service.type=ClusterIP \
       --set useBundledSystemChart=true \
       --set additionalTrustedCAs=false \
       --set replicas=3 \
@@ -84,6 +84,7 @@ rancher_helm_install_commands:
       --set privateCA=true \
       --set ingress.enabled=false \
       --set service.type=NodePort \
+      --set service.nodePort="${RANCHER_HTTP_NODEPORT}" \
       --set useBundledSystemChart=true \
       --set additionalTrustedCAs=false \
       --set replicas=3 \

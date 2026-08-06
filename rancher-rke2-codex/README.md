@@ -1,4 +1,9 @@
-# Rancher RKE2 Codex Plugin 0.9.5
+# Rancher RKE2 Codex Plugin 0.9.6
+
+## 0.9.6 edition-specific NodePort ownership
+
+Enterprise Rancher uses its Helm-managed `rancher` NodePort Service; standard
+Rancher uses the independently managed `rancher-nodeport` Service.
 
 ## 0.9.5 RancherLB private-CA verification
 

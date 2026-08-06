@@ -9,7 +9,7 @@
       - rancher_hostname | length > 0
       - rancher_http_nodeport | int == 30080
       - rancher_helm_tls == 'external'
-      - rancher_helm_service_type == 'NodePort'
+      - rancher_helm_service_type == ('NodePort' if rancher_chart_edition == 'enterprise' else 'ClusterIP')
       - rancher_access_mode in ['fqdn', 'ip-compatibility']
       - rancher_certificate.source in ['existing', 'generate']
       - rancher_certificate.cert_file | length > 0
@@ -198,6 +198,7 @@
     src: rancher-nodeport.yaml.j2
     dest: "{{ rancher_rendered_dir }}/rancher-nodeport.yaml"
     mode: '0600'
+  when: rancher_chart_edition == 'standard'
 
 - name: Ensure Rancher namespace exists
   ansible.builtin.shell: >-
@@ -273,6 +274,7 @@
     RANCHER_KUBECONFIG: "{{ rancher_kubeconfig }}"
     RANCHER_HOSTNAME: "{{ rancher_hostname }}"
     RANCHER_BOOTSTRAP_PASSWORD: "{{ lookup('ansible.builtin.file', rancher_bootstrap_password_file) | trim }}"
+    RANCHER_HTTP_NODEPORT: "{{ rancher_http_nodeport }}"
     # Keep the upstream registry name in the image reference.  RKE2/containerd
     # applies registries.yaml mirrors and rewrites itself; prepending Harbor here
     # would yield paths such as <harbor>/registry.rancher.cn/prime/rancher.
@@ -285,6 +287,7 @@
     argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", apply, -f, "{{ rancher_rendered_dir }}/rancher-nodeport.yaml"]
   register: rancher_nodeport_apply
   changed_when: "'created' in rancher_nodeport_apply.stdout or 'configured' in rancher_nodeport_apply.stdout"
+  when: rancher_chart_edition == 'standard'
 
 - name: Verify Rancher deployment readiness
   ansible.builtin.command:
@@ -293,7 +296,7 @@
 
 - name: Read the Rancher NodePort
   ansible.builtin.command:
-    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", get, service, rancher-nodeport, -o, "jsonpath={.spec.ports[0].nodePort}"]
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", get, service, "{{ rancher_nodeport_service_name }}", -o, "jsonpath={.spec.ports[0].nodePort}"]
   register: rancher_nodeport_read
   changed_when: false
 

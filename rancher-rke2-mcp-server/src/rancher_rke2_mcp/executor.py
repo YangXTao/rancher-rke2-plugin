@@ -687,6 +687,8 @@ class RancherExecutor(VmExecutor):
             "rancher_hostname": str(lb["ip"]), "rancher_access_mode": "ip-compatibility",
             "rancher_lb_ip": str(lb["ip"]), "rancher_replicas": int(rancher["replicas"]),
             "rancher_http_nodeport": int(rancher["nodeport"]),
+            "rancher_helm_service_type": "NodePort" if enterprise else "ClusterIP",
+            "rancher_nodeport_service_name": "rancher" if enterprise else "rancher-nodeport",
             "rancher_run_root": run_dir,
             "rancher_kubeconfig": config["_rancher_kubeconfig_source"],
             "rancher_bootstrap_password_file": f"{run_dir}/secrets/rancher-bootstrap-password",

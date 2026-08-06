@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.9.5
+# Rancher/RKE2 MCP Server 0.9.6
+
+## 0.9.6 edition-specific NodePort ownership
+
+Enterprise Rancher uses Helm to manage the release-owned `rancher` NodePort
+Service on port 30080. Standard Rancher keeps its Helm Service as ClusterIP and
+uses the separately rendered, Ansible-managed `rancher-nodeport` Service.
 
 ## 0.9.5 RancherLB private-CA verification
 

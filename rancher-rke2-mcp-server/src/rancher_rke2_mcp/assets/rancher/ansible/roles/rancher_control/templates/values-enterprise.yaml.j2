@@ -6,6 +6,7 @@ ingress:
 privateCA: {{ rancher_private_ca | bool | lower }}
 service:
   type: "{{ rancher_helm_service_type }}"
+  nodePort: {{ rancher_http_nodeport }}
 useBundledSystemChart: {{ rancher_use_bundled_system_chart | bool | lower }}
 additionalTrustedCAs: {{ rancher_enterprise_profile.additional_trusted_cas | bool | lower }}
 auditLog:
