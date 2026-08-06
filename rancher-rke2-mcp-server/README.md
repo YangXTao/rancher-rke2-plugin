@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.10.4
+# Rancher/RKE2 MCP Server 0.10.5
+
+## 0.10.5 edition-aware Rancher mirror for both clusters
+
+The Local RKE2 registry defaults now use the same edition-based Rancher mirror
+as downstream: `registry.rancher.cn` for `-ent` versions and
+`registry.rancher.com` otherwise, with only the selected entry rendered. The
+Docker Hub default mirror no longer adds a `hub/$1` rewrite in either cluster.
 
 ## 0.10.4 edition-aware Rancher mirror default
 

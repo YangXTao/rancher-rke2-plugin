@@ -609,10 +609,15 @@ class LocalRke2Executor(VmExecutor):
         hostname = str(registry["hostname"])
         mirrors = local_registry.get("mirrors")
         if mirrors is None:
+            rancher_version = str(config.get("versions", {}).get("rancher", ""))
+            rancher_registry = (
+                "registry.rancher.cn"
+                if rancher_version.endswith("-ent")
+                else "registry.rancher.com"
+            )
             mirrors = {
-                "docker.io": {"endpoints": [f"https://{hostname}"], "rewrites": {"(^.+$)": "hub/$1"}},
-                "registry.rancher.cn": {"endpoints": [f"https://{hostname}"], "rewrites": {}},
-                "registry.rancher.com": {"endpoints": [f"https://{hostname}"], "rewrites": {}},
+                "docker.io": {"endpoints": [f"https://{hostname}"]},
+                rancher_registry: {"endpoints": [f"https://{hostname}"], "rewrites": {}},
             }
         configs = local_registry.get("configs")
         if configs is None:

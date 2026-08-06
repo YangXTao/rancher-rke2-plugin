@@ -16,7 +16,12 @@ from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
 from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
-from rancher_rke2_mcp.executor import DownstreamExecutor, ExecutionResult, VmExecutor
+from rancher_rke2_mcp.executor import (
+    DownstreamExecutor,
+    ExecutionResult,
+    LocalRke2Executor,
+    VmExecutor,
+)
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
@@ -967,6 +972,34 @@ def test_downstream_default_rancher_mirror_follows_edition(tmp_path: Path) -> No
     }
     assert "registry.rancher.com" in mirrors
     assert "registry.rancher.cn" not in mirrors
+
+
+def test_local_rke2_default_mirrors_follow_rancher_edition(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    executor = LocalRke2Executor(secret_root=str(secret_root))
+    run_dir = "/data/rancher/automation/runs/test/local-rke2"
+
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    config = service.store.get_config(digest)
+    assert config is not None
+    mirrors = executor._local_group_vars(config, run_dir)["registry_mirrors"]
+    assert set(mirrors) == {"docker.io", "registry.rancher.cn"}
+    assert "rewrites" not in mirrors["docker.io"]
+    assert mirrors["registry.rancher.cn"] == {
+        "endpoints": ["https://registry.example.internal"],
+        "rewrites": {},
+    }
+
+    standard = EXAMPLE.replace('rancher: "2.13.6-ent"', 'rancher: "2.13.6"')
+    digest_standard = service.validate_config(standard)["data"]["config_digest"]
+    config_standard = service.store.get_config(digest_standard)
+    assert config_standard is not None
+    mirrors_standard = executor._local_group_vars(
+        config_standard, run_dir
+    )["registry_mirrors"]
+    assert set(mirrors_standard) == {"docker.io", "registry.rancher.com"}
 
 
 def test_downstream_assets_require_mandatory_logs_and_registration_order() -> None:
