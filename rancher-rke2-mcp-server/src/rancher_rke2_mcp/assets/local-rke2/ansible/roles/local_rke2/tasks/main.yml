@@ -315,6 +315,9 @@
     stdin: "{{ rke2_nodes.stdout }}"
   register: rke2_ready_server_count
   changed_when: false
+  until: rke2_ready_server_count.stdout | int == 3
+  retries: 30
+  delay: 10
   when: inventory_hostname == groups['management_servers'][-1]
 
 - name: Read healthy local etcd pods after the final join
@@ -324,6 +327,9 @@
     --field-selector=status.phase=Running --no-headers
   register: rke2_etcd_pods
   changed_when: false
+  until: rke2_etcd_pods.stdout_lines | length == 3
+  retries: 30
+  delay: 10
   when: inventory_hostname == groups['management_servers'][-1]
 
 - name: Read healthy Cilium pods after the final join
@@ -333,6 +339,9 @@
     --field-selector=status.phase=Running --no-headers
   register: rke2_cilium_pods
   changed_when: false
+  until: rke2_cilium_pods.stdout_lines | length >= 3
+  retries: 30
+  delay: 10
   when: inventory_hostname == groups['management_servers'][-1]
 
 - name: Require three Ready servers with healthy etcd and Cilium

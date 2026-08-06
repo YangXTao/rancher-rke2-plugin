@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.10.13
+# Rancher/RKE2 MCP Server 0.10.14
+
+## 0.10.14 Local RKE2 readiness wait
+
+The final Local RKE2 verification now retries the Ready-server, etcd, and Cilium
+pod counts until they settle (up to five minutes each) instead of failing on the
+first sample, which happened when the third server had just joined.
 
 ## 0.10.13 remote run log reading
 
