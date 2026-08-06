@@ -1,4 +1,13 @@
-# Rancher/RKE2 MCP Server 0.10.1
+# Rancher/RKE2 MCP Server 0.10.2
+
+## 0.10.2 reference downstream registries by default
+
+When `downstream_cluster.registries` is omitted, the executor now uses the
+validated reference defaults: Harbor registry enabled with the `myharbor-auth`
+secret created by the Rancher phase, plus mirrors for Docker Hub,
+dp.apps.rancher.io, GHCR, Kubernetes registries, Quay, Rancher, and SUSE.
+An explicitly submitted registries object remains authoritative as-is, including
+an explicit `enabled: false`.
 
 ## 0.10.1 legacy config digest compatibility
 

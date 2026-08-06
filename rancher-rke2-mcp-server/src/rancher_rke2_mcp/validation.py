@@ -10,7 +10,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from .constants import MAX_YAML_BYTES, SCHEMA_VERSION
-from .models import AutomationConfig, DOWNSTREAM_REGISTRIES_DEFAULT
+from .models import AutomationConfig, DownstreamClusterConfig
 from .redaction import redact
 from .secrets import ensure_reference_only_config
 
@@ -77,20 +77,27 @@ def _digest(config: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
-def _drop_default_downstream_fields(normalized: dict[str, Any]) -> dict[str, Any]:
+def _drop_unset_downstream_fields(
+    model: AutomationConfig,
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
     """Keep pre-0.10.0 config digests stable when new fields are unset.
 
     The 0.10.0 downstream executor introduced optional rkeConfig/registries
-    fields. Leaving their default values in the normalized configuration would
-    change the config digest for YAML that never set them, which would break the
+    fields. Leaving their defaults in the normalized configuration would change
+    the config digest for YAML that never set them, which would break the
     Rancher-before-downstream artifact lookup for runs validated before the
-    upgrade. Explicitly set values are preserved.
+    upgrade. Only explicitly set values are preserved, so an explicit
+    ``registries: {enabled: false, ...}`` remains distinguishable from unset.
     """
     downstream = normalized.get("downstream_cluster")
-    if isinstance(downstream, dict):
-        if downstream.get("rke_config") == {}:
+    configured = model.downstream_cluster
+    if isinstance(downstream, dict) and isinstance(
+        configured, DownstreamClusterConfig
+    ):
+        if "rke_config" not in configured.model_fields_set:
             downstream.pop("rke_config", None)
-        if downstream.get("registries") == DOWNSTREAM_REGISTRIES_DEFAULT:
+        if "registries" not in configured.model_fields_set:
             downstream.pop("registries", None)
     return normalized
 
@@ -105,7 +112,7 @@ def validate(config: str | dict[str, Any]) -> ValidationOutcome:
         ensure_reference_only_config(raw)
         model = AutomationConfig.model_validate(raw)
         normalized = model.model_dump(mode="json")
-        normalized = _drop_default_downstream_fields(normalized)
+        normalized = _drop_unset_downstream_fields(model, normalized)
     except ValidationError as exc:
         errors = []
         for item in exc.errors(include_input=False, include_url=False):

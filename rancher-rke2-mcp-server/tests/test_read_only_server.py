@@ -165,6 +165,28 @@ def test_set_downstream_fields_are_preserved_in_normalized_config(
     assert normalized["downstream_cluster"]["registries"]["enabled"] is True
 
 
+def test_explicit_disabled_registries_are_distinguishable_from_unset(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    marker = "  registration:\n"
+    _, _, rest = tail.partition(marker)
+    explicit = (
+        head
+        + "  registries:\n"
+        + '    enabled: false\n    systemDefaultRegistry: ""\n'
+        + "    configs: []\n    mirrors: []\n"
+        + marker
+        + rest
+    )
+    result = service.validate_config(explicit)
+    assert result["ok"] is True
+    normalized = service.store.get_config(result["data"]["config_digest"])
+    assert normalized is not None
+    assert normalized["downstream_cluster"]["registries"]["enabled"] is False
+
+
 def test_rejects_proxy_url_with_embedded_credentials(tmp_path: Path) -> None:
     unsafe = EXAMPLE.replace(
         'proxy_url: ""',
@@ -876,6 +898,47 @@ def test_downstream_executor_renders_generated_artifacts(tmp_path: Path) -> None
     assert children["downstream_first_worker"]["hosts"]["worker01"]["rancher_node_roles"] == [
         "worker"
     ]
+
+
+def test_downstream_executor_uses_reference_registries_when_unset(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    marker = "  registration:\n"
+    _, _, rest = tail.partition(marker)
+    minimal = head + marker + rest
+    digest = service.validate_config(minimal)["data"]["config_digest"]
+    config = service.store.get_config(digest)
+    assert config is not None
+    executor = DownstreamExecutor(secret_root=str(secret_root))
+    registries = json.loads(executor._downstream_tfvars(config))["registries"]
+    assert registries["enabled"] is True
+    assert registries["configs"][0] == {
+        "hostname": "registry.example.internal",
+        "authConfigSecretName": "myharbor-auth",
+        "tlsSecretName": "",
+        "caBundle": "",
+        "insecure": True,
+    }
+    mirrors = {item["hostname"]: item for item in registries["mirrors"]}
+    assert set(mirrors) == {
+        "docker.io",
+        "dp.apps.rancher.io",
+        "ghcr.io",
+        "k8s.gcr.io",
+        "quay.io",
+        "registry.k8s.io",
+        "registry.rancher.com",
+        "registry.suse.com",
+    }
+    assert mirrors["docker.io"]["endpoints"] == [
+        "https://registry.example.internal"
+    ]
+    assert mirrors["docker.io"]["rewrites"] == {"(^.+$)": "hub/$1"}
+    assert mirrors["ghcr.io"]["endpoints"] == ["https://ghcr.zscr.io"]
 
 
 def test_downstream_assets_require_mandatory_logs_and_registration_order() -> None:

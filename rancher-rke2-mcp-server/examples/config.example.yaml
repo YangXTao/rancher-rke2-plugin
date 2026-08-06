@@ -156,7 +156,8 @@ downstream_cluster:
             - "max-pods=999"
         protect-kernel-defaults: false
   # Terraform registries object for the downstream cluster. Each submitted mirror
-  # is authoritative for its hostname; myharbor-auth is created by the Rancher phase.
+  # is authoritative for its hostname; myharbor-auth is created by the Rancher
+  # phase. Omit the whole block to use the reference Harbor mirror defaults.
   registries:
     enabled: true
     systemDefaultRegistry: ""

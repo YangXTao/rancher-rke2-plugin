@@ -116,14 +116,6 @@ _DEFAULT_DOWNSTREAM_RKE_CONFIG: dict[str, Any] = {
     ],
 }
 
-_DEFAULT_DOWNSTREAM_REGISTRIES: dict[str, Any] = {
-    "enabled": False,
-    "systemDefaultRegistry": "",
-    "configs": [],
-    "mirrors": [],
-}
-
-
 class VmExecutor:
     """Run the VM-only Terraform bundle on the declared SSH control host.
 
@@ -1019,10 +1011,74 @@ class DownstreamExecutor(RancherExecutor):
 
     def _downstream_registries(self, config: dict[str, Any]) -> dict[str, Any]:
         downstream = config.get("downstream_cluster", {})
-        return _deep_merge(
-            _DEFAULT_DOWNSTREAM_REGISTRIES,
-            dict(downstream.get("registries") or {}),
+        submitted = downstream.get("registries")
+        if isinstance(submitted, dict) and submitted:
+            # An explicitly submitted registries object is authoritative: every
+            # mirror item keeps exactly the submitted endpoints and rewrites.
+            return dict(submitted)
+        return self._default_downstream_registries(config)
+
+    def _default_downstream_registries(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Reference Harbor mirror defaults from the validated downstream skill."""
+        harbor = str(config.get("registry", {}).get("hostname", ""))
+        insecure = bool(
+            config.get("registry", {}).get("insecure_skip_verify", True)
         )
+        return {
+            "enabled": True,
+            "systemDefaultRegistry": "",
+            "configs": [
+                {
+                    "hostname": harbor,
+                    "authConfigSecretName": "myharbor-auth",
+                    "tlsSecretName": "",
+                    "caBundle": "",
+                    "insecure": insecure,
+                }
+            ],
+            "mirrors": [
+                {
+                    "hostname": "docker.io",
+                    "endpoints": [f"https://{harbor}"],
+                    "rewrites": {"(^.+$)": "hub/$1"},
+                },
+                {
+                    "hostname": "dp.apps.rancher.io",
+                    "endpoints": [f"https://{harbor}"],
+                    "rewrites": {"(^.+$)": "dp.apps.rancher.io/$1"},
+                },
+                {
+                    "hostname": "ghcr.io",
+                    "endpoints": ["https://ghcr.zscr.io"],
+                    "rewrites": {},
+                },
+                {
+                    "hostname": "k8s.gcr.io",
+                    "endpoints": [f"https://{harbor}"],
+                    "rewrites": {"(^.+$)": "registry.k8s.io/$1"},
+                },
+                {
+                    "hostname": "quay.io",
+                    "endpoints": [f"https://{harbor}"],
+                    "rewrites": {"(^.+$)": "quay.io/$1"},
+                },
+                {
+                    "hostname": "registry.k8s.io",
+                    "endpoints": [f"https://{harbor}"],
+                    "rewrites": {"(^.+$)": "registry.k8s.io/$1"},
+                },
+                {
+                    "hostname": "registry.rancher.com",
+                    "endpoints": [f"https://{harbor}"],
+                    "rewrites": {"(^.+$)": "registry.rancher.com/$1"},
+                },
+                {
+                    "hostname": "registry.suse.com",
+                    "endpoints": [f"https://{harbor}"],
+                    "rewrites": {"(^.+$)": "registry.suse.com/$1"},
+                },
+            ],
+        }
 
     def _versions_tf(self, config: dict[str, Any]) -> str:
         template = (self.assets_root / "terraform" / "versions.tf.tmpl").read_text(
