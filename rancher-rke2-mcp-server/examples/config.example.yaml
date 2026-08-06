@@ -1,15 +1,29 @@
+# ============================================================================
+# Rancher/RKE2 自动化配置示例（Codex Plugin 版）
+#
+# 用法：
+#   1. 复制本文件，把示例地址/主机名/资源池改成你的环境；
+#   2. 凭据一律使用 docker-secret://<name> 引用，明文密码会被服务器拒绝；
+#      先在 MCP 主机创建对应 Docker Secret（见文末 Secret 清单）；
+#   3. 交给 validate_config 校验，通过后用返回的 config_digest 建计划。
+#
+# 组件执行顺序固定为：vm -> node-init -> local-rke2 -> rancher -> downstream
+# ============================================================================
+
 run:
-  run_id: auto
-  components: all
+  run_id: auto            # 每次执行自动生成
+  components: all         # 全部组件；也可指定单个组件，如 [downstream]
   workspace: /data/rancher/automation
 
 execution:
   control_host:
+    # 必需：已有的 Linux 控制机（只装 Docker，其余依赖装在容器内）
     address: "192.0.2.10"
     port: 22
     username: root
     password_ref: "docker-secret://control_host_password"
   container:
+    # reuse-or-create | reuse | create
     strategy: reuse-or-create
     name: rancher-rke2-control
     image: ubuntu:24.04
@@ -19,6 +33,7 @@ execution:
       workspace: /data/rancher/automation
 
 node_access:
+  # 必需：克隆模板里已有的登录凭据
   username: root
   port: 22
   password_ref: "docker-secret://node_password"
@@ -33,15 +48,18 @@ vsphere:
   datastore: DATASTORE01
   network: VLAN-RKE2
   template: linux-template
+  vm_folder: ""
 
 network:
   netmask: 24
   gateway: "192.0.2.1"
-  dns_servers: ["192.0.2.53"]
+  dns_servers:
+    - "192.0.2.53"
+  vm_domain: ""
 
 nodes:
   management:
-    servers:
+    servers:                       # 固定 3 台 Local RKE2 server
       - {hostname: rancher01, ip: "192.0.2.21", cpu: 4, memory_mb: 8192, disk_gb: 100}
       - {hostname: rancher02, ip: "192.0.2.22", cpu: 4, memory_mb: 8192, disk_gb: 100}
       - {hostname: rancher03, ip: "192.0.2.23", cpu: 4, memory_mb: 8192, disk_gb: 100}
@@ -49,47 +67,98 @@ nodes:
   downstream:
     controlplane:
       - {hostname: master01, ip: "192.0.2.24", cpu: 4, memory_mb: 8192, disk_gb: 100}
-      - {hostname: master02, ip: "192.0.2.25", cpu: 4, memory_mb: 8192, disk_gb: 100}
-      - {hostname: master03, ip: "192.0.2.26", cpu: 4, memory_mb: 8192, disk_gb: 100}
     workers:
       - {hostname: worker01, ip: "192.0.2.27", cpu: 4, memory_mb: 8192, disk_gb: 100}
-      - {hostname: worker02, ip: "192.0.2.28", cpu: 4, memory_mb: 8192, disk_gb: 100}
-      - {hostname: worker03, ip: "192.0.2.29", cpu: 4, memory_mb: 8192, disk_gb: 100}
 
 downloads:
-  mode: online
-  proxy_url: ""
+  mode: online             # online | offline（offline 永不联网）
+  proxy_url: ""            # 代理地址，不要包含账号密码
+  proxy_username: null     # 启用代理时填写，与 proxy_password_ref 成对
+  proxy_password_ref: null
   software_root: /software
 
 registry:
+  # 必需：Harbor 地址与 TLS 策略（hostname 必填）
   hostname: registry.example.internal
-  username: null
-  password_ref: null
+  username: admin
+  password_ref: "docker-secret://registry_password"
   insecure_skip_verify: true
 
 versions:
   terraform: "1.14.7"
   vsphere_provider: "2.15.0"
   rke2_management: "v1.34.8+rke2r2"
-  rancher: "2.13.6-ent"
+  rancher: "2.13.6-ent"    # 或非 ent（如 2.13.6）；决定 Rancher 镜像域：ent->registry.rancher.cn，非 ent->registry.rancher.com
   rancher2_provider: "13.1.4"
   rke2_downstream: "v1.34.8+rke2r2"
 
 local_rke2:
   cni: cilium
   disable_kube_proxy: false
+  signed_cert_expiration_days: 3650
+  cluster_cidr: 10.42.0.0/16
+  service_cidr: 10.43.0.0/16
+  cluster_dns: 10.43.0.10
+  offline_image_files: []
+  # registry 省略时自动按 registry.hostname 生成默认镜像：
+  #   docker.io（无 rewrites）+ 按 Rancher 版本选择的 registry.rancher.cn / registry.rancher.com
+  # 如需覆盖，示例：
+  # registry:
+  #   mirrors:
+  #     docker.io: {endpoints: ["https://registry.example.internal"]}
+  #   configs:
+  #     registry.example.internal:
+  #       auth: {enabled: true, username: admin, password_ref: "docker-secret://registry_password"}
+  #       tls: {insecure_skip_verify: true, ca_file: ""}
+
+node_init: {}              # 使用已验证默认（46 项 sysctl、模块、limits 等）
 
 rancher:
   bootstrap_password_ref: "docker-secret://rancher_bootstrap_password"
   nodeport: 30080
   replicas: 3
+  # Rancher Helm 安装参数参考（实际执行使用已验证 skill 资产中的同参数，此处仅作展示）
+  helm_install_commands:
+    standard: |
+      helm upgrade --install rancher "${RANCHER_CHART}" \
+        --namespace cattle-system \
+        --create-namespace \
+        --set-string hostname="${RANCHER_HOSTNAME}" \
+        --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+        --set tls=external \
+        --set privateCA=true \
+        --set ingress.enabled=false \
+        --set service.type=NodePort \
+        --set useBundledSystemChart=true \
+        --set additionalTrustedCAs=false \
+        --set replicas=3 \
+        --set-string rancherImage="${RANCHER_IMAGE}" \
+        --kubeconfig "${RANCHER_KUBECONFIG}" \
+        --wait \
+        --timeout 15m
+    enterprise: |
+      helm upgrade --install rancher "${RANCHER_CHART}" \
+        --namespace cattle-system \
+        --create-namespace \
+        --set auditLog.enabled=true \
+        --set auditLog.destination=hostPath \
+        --set auditLog.maxAge=180 \
+        --set auditLog.level=3 \
+        --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+        --set tls=external \
+        --set privateCA=true \
+        --set ingress.enabled=false \
+        --set service.type=NodePort \
+        --set useBundledSystemChart=true \
+        --kubeconfig "${RANCHER_KUBECONFIG}" \
+        --wait --timeout 15m
 
 downstream_cluster:
   name: downstream
-  # User-customizable Rancher rkeConfig; every omitted key uses the validated
-  # reference defaults (Cilium kube-proxy replacement, Hubble metrics, etcd/API
-  # controller arguments, CIDRs, and complete kubelet arguments).
-  rke_config:
+  # 只列出你想自定义的 rkeConfig；未列出的键使用参考默认
+  # （Cilium kube-proxy replacement、Hubble、etcd/API/controller 参数、CIDR、完整 kubelet 参数）
+  # 省略整个 rkeConfig 时全部使用参考默认。
+  rkeConfig:
     chartValues:
       rke2-cilium:
         hubble:
@@ -104,10 +173,8 @@ downstream_cluster:
               - icmp
               - http
               - port-distribution
-          relay:
-            enabled: true
-          ui:
-            enabled: true
+          relay: {enabled: true}
+          ui: {enabled: true}
         k8sServiceHost: 127.0.0.1
         k8sServicePort: "6443"
         kubeProxyReplacement: true
@@ -155,25 +222,28 @@ downstream_cluster:
             - "sync-frequency=30s"
             - "max-pods=999"
         protect-kernel-defaults: false
-  # Terraform registries object for the downstream cluster. Each submitted mirror
-  # is authoritative for its hostname; myharbor-auth is created by the Rancher
-  # phase. Omit the whole block to use the reference Harbor mirror defaults.
-  registries:
-    enabled: true
-    systemDefaultRegistry: ""
-    configs:
-      - hostname: "registry.example.internal"
-        authConfigSecretName: myharbor-auth
-        tlsSecretName: ""
-        caBundle: ""
-        insecure: true
-    mirrors:
-      - hostname: docker.io
-        endpoints: ["https://registry.example.internal"]
-        rewrites: {"(^.+$)": "hub/$1"}
+  # registries 省略时使用参考默认：启用 Harbor（registry.hostname）+ myharbor-auth
+  # + 完整镜像集（docker.io 无 rewrites；Rancher 域按版本选择）。
+  # 除非手工覆盖，否则无需填写；需要覆盖时在此显式写 enabled/configs/mirrors，
+  # 且每个 mirror 的 endpoints/rewrites 会原样保留。
   registration:
-    order: [first-controlplane, first-worker, remaining-controlplanes, remaining-workers]
+    order:
+      - first-controlplane
+      - first-worker
+      - remaining-controlplanes
+      - remaining-workers
+    require_insecure_curl: true
 
 deliverables:
-  installation_manual: ask
+  installation_manual: ask   # false | true | ask
   require_audit_pass: true
+
+# ============================================================================
+# Secret 清单（在 MCP 主机上创建，名称对应 docker-secret:// 后面部分）
+#   control_host_password       控制机 SSH 密码
+#   node_password               节点 SSH 密码
+#   vsphere_password            vCenter 密码
+#   rancher_bootstrap_password  Rancher admin 初始密码
+#   proxy_password              下载代理密码（启用代理时）
+#   registry_password           Harbor 密码
+# ============================================================================

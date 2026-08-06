@@ -187,8 +187,11 @@ DOWNSTREAM_REGISTRIES_DEFAULT: dict[str, Any] = {
 
 
 class DownstreamClusterConfig(ExtensibleModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
     name: str = Field(min_length=1)
     rke_config: dict[str, Any] = Field(
+        alias="rkeConfig",
         default_factory=dict,
         description=(
             "User-customizable Rancher rkeConfig settings. Missing keys fall back "

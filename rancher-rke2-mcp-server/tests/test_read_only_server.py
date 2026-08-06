@@ -96,6 +96,7 @@ def write_required_secrets(secret_root: Path) -> None:
         "node_password",
         "vsphere_password",
         "rancher_bootstrap_password",
+        "registry_password",
     ):
         (secret_root / name).write_text(f"{name}-value\n", encoding="utf-8")
     (secret_root / "control_host_known_hosts").write_text(
@@ -128,9 +129,25 @@ def test_rejects_legacy_plaintext_credentials(tmp_path: Path) -> None:
 
 
 def test_accepts_kubernetes_secret_name_identifiers(tmp_path: Path) -> None:
-    result = make_service(tmp_path).validate_config(EXAMPLE)
+    head, _, tail = EXAMPLE.partition("  rkeConfig:\n")
+    marker = "  registration:\n"
+    _, _, rest = tail.partition(marker)
+    with_registries = (
+        head
+        + "  registries:\n"
+        + '    enabled: true\n    systemDefaultRegistry: ""\n'
+        + "    configs:\n"
+        + '      - hostname: "registry.example.internal"\n'
+        + "        authConfigSecretName: myharbor-auth\n"
+        + '        tlsSecretName: ""\n        caBundle: ""\n'
+        + "        insecure: true\n"
+        + "    mirrors: []\n"
+        + marker
+        + rest
+    )
+    result = make_service(tmp_path).validate_config(with_registries)
     assert result["ok"] is True
-    unsafe = EXAMPLE.replace(
+    unsafe = with_registries.replace(
         "authConfigSecretName: myharbor-auth",
         "authConfigSecretNameValue: myharbor-auth",
         1,
@@ -144,7 +161,7 @@ def test_unset_downstream_fields_keep_legacy_config_digest_shape(
     tmp_path: Path,
 ) -> None:
     service = make_service(tmp_path)
-    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    head, _, tail = EXAMPLE.partition("  rkeConfig:\n")
     marker = "  registration:\n"
     _, _, rest = tail.partition(marker)
     minimal = head + marker + rest
@@ -167,14 +184,15 @@ def test_set_downstream_fields_are_preserved_in_normalized_config(
     normalized = service.store.get_config(result["data"]["config_digest"])
     assert normalized is not None
     assert "rke_config" in normalized["downstream_cluster"]
-    assert normalized["downstream_cluster"]["registries"]["enabled"] is True
+    assert normalized["downstream_cluster"]["rke_config"]["machinePools"] is None
+    assert "registries" not in normalized["downstream_cluster"]
 
 
 def test_explicit_disabled_registries_are_distinguishable_from_unset(
     tmp_path: Path,
 ) -> None:
     service = make_service(tmp_path)
-    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    head, _, tail = EXAMPLE.partition("  rkeConfig:\n")
     marker = "  registration:\n"
     _, _, rest = tail.partition(marker)
     explicit = (
@@ -509,7 +527,7 @@ def test_preflight_checks_secret_availability_and_tcp_without_exposing_values(
     assert preflight["non_mutating"] is True
     assert preflight["authentication_attempted"] is False
     assert preflight["summary"]["failed"] == 0
-    assert preflight["summary"]["skipped"] == 13
+    assert preflight["summary"]["skipped"] == 8
     assert any(item["name"] == "tcp.vsphere_https" for item in preflight["checks"])
     assert all(
         item["status"] == "SKIPPED"
@@ -540,7 +558,7 @@ def test_preflight_checks_node_ssh_when_plan_does_not_include_vm(
     node_checks = [
         item for item in checks if item["name"].startswith("tcp.node_ssh.")
     ]
-    assert len(node_checks) == 10
+    assert len(node_checks) == 6
     assert all(item["status"] == "PASSED" for item in node_checks)
 
 
@@ -856,7 +874,7 @@ def test_downstream_preflight_adds_rancher_lb_https_check(tmp_path: Path) -> Non
     node_checks = [
         item for item in checks if item["name"].startswith("tcp.node_ssh.")
     ]
-    assert len(node_checks) == 10
+    assert len(node_checks) == 6
     assert all(item["status"] == "PASSED" for item in node_checks)
 
 
@@ -878,7 +896,14 @@ def test_downstream_executor_renders_generated_artifacts(tmp_path: Path) -> None
     assert tfvars["rke_config"]["machineGlobalConfig"]["cni"] == "cilium"
     assert tfvars["rke_config"]["chartValues"]["rke2-cilium"]["kubeProxyReplacement"] is True
     assert tfvars["registries"]["enabled"] is True
-    assert tfvars["registries"]["mirrors"][0]["rewrites"] == {"(^.+$)": "hub/$1"}
+    mirrors = {
+        item["hostname"]: item for item in tfvars["registries"]["mirrors"]
+    }
+    assert "rewrites" not in mirrors["docker.io"]
+    assert mirrors["docker.io"]["endpoints"] == [
+        "https://registry.example.internal"
+    ]
+    assert "registry.rancher.cn" in mirrors
 
     versions_tf = executor._versions_tf(config)
     assert 'version = "13.1.4"' in versions_tf
@@ -888,16 +913,10 @@ def test_downstream_executor_renders_generated_artifacts(tmp_path: Path) -> None
     inventory = executor._downstream_inventory(config)
     children = inventory["all"]["children"]
     assert list(children["downstream_first_controlplane"]["hosts"]) == ["master01"]
-    assert list(children["downstream_remaining_controlplanes"]["hosts"]) == [
-        "master02",
-        "master03",
-    ]
+    assert list(children["downstream_remaining_controlplanes"]["hosts"]) == []
     assert list(children["downstream_first_worker"]["hosts"]) == ["worker01"]
-    assert list(children["downstream_remaining_workers"]["hosts"]) == [
-        "worker02",
-        "worker03",
-    ]
-    assert len(children["downstream_nodes"]["hosts"]) == 6
+    assert list(children["downstream_remaining_workers"]["hosts"]) == []
+    assert len(children["downstream_nodes"]["hosts"]) == 2
     assert inventory["all"]["vars"]["ansible_connection"] == "paramiko"
     first_cp = children["downstream_first_controlplane"]["hosts"]["master01"]
     assert first_cp["rancher_node_roles"] == ["etcd", "controlplane"]
@@ -912,7 +931,7 @@ def test_downstream_executor_uses_reference_registries_when_unset(
     secret_root = tmp_path / "secrets"
     write_required_secrets(secret_root)
     service = make_service(tmp_path, secret_root=secret_root)
-    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    head, _, tail = EXAMPLE.partition("  rkeConfig:\n")
     marker = "  registration:\n"
     _, _, rest = tail.partition(marker)
     minimal = head + marker + rest
@@ -955,7 +974,7 @@ def test_downstream_default_rancher_mirror_follows_edition(tmp_path: Path) -> No
     secret_root = tmp_path / "secrets"
     write_required_secrets(secret_root)
     service = make_service(tmp_path, secret_root=secret_root)
-    head, _, tail = EXAMPLE.partition("  rke_config:\n")
+    head, _, tail = EXAMPLE.partition("  rkeConfig:\n")
     marker = "  registration:\n"
     _, _, rest = tail.partition(marker)
     minimal = head + marker + rest
@@ -1045,3 +1064,54 @@ def test_downstream_assets_require_mandatory_logs_and_registration_order() -> No
     assert "insecure_node_command" in (assets / "terraform" / "outputs.tf").read_text(
         encoding="utf-8"
     )
+
+
+def test_validate_config_returns_effective_config_with_defaults(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    result = service.validate_config(EXAMPLE)
+    assert result["ok"] is True
+    effective = result["data"]["effective_config"]
+    downstream = effective["downstream_cluster"]
+    assert downstream["rke_config"]["machinePools"] is None
+    assert downstream["registries"]["enabled"] is True
+    assert downstream["registries"]["configs"][0]["hostname"] == (
+        "registry.example.internal"
+    )
+    assert downstream["registries"]["configs"][0]["authConfigSecretName"] == (
+        "***REDACTED***"
+    )
+    assert any(
+        item["hostname"] == "registry.rancher.cn"
+        for item in downstream["registries"]["mirrors"]
+    )
+    local_registry = effective["local_rke2"]["registry"]
+    assert "registry.rancher.cn" in local_registry["mirrors"]
+    assert local_registry["configs"]["registry.example.internal"]["auth"][
+        "enabled"
+    ] is True
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "docker-secret://registry_password" in serialized
+    assert "hub/$1" not in serialized
+
+
+def test_plugin_config_example_validates_and_expands_defaults(
+    tmp_path: Path,
+) -> None:
+    plugin_example = (
+        PROJECT_ROOT.parent / "rancher-rke2-codex" / "assets" / "config.example.yaml"
+    ).read_text(encoding="utf-8")
+    service = make_service(tmp_path)
+    result = service.validate_config(plugin_example)
+    assert result["ok"] is True
+    normalized = service.store.get_config(result["data"]["config_digest"])
+    assert normalized is not None
+    # The user-facing rkeConfig alias maps to the normalized rke_config field.
+    assert normalized["downstream_cluster"]["rke_config"]["machinePools"] is None
+    assert "helm_install_commands" in normalized["rancher"]
+    assert "standard" in normalized["rancher"]["helm_install_commands"]
+    assert "enterprise" in normalized["rancher"]["helm_install_commands"]
+    effective = result["data"]["effective_config"]
+    assert effective["downstream_cluster"]["registries"]["enabled"] is True
+    assert effective["downstream_cluster"]["registries"]["mirrors"]

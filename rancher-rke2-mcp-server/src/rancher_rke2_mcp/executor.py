@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import json
 import logging
@@ -115,6 +116,120 @@ _DEFAULT_DOWNSTREAM_RKE_CONFIG: dict[str, Any] = {
         }
     ],
 }
+
+
+def _default_downstream_rke_config() -> dict[str, Any]:
+    """Return a fresh copy of the reference downstream rkeConfig defaults."""
+    return copy.deepcopy(_DEFAULT_DOWNSTREAM_RKE_CONFIG)
+
+
+def _default_downstream_registries(config: dict[str, Any]) -> dict[str, Any]:
+    """Reference Harbor mirror defaults for the downstream cluster."""
+    harbor = str(config.get("registry", {}).get("hostname", ""))
+    insecure = bool(config.get("registry", {}).get("insecure_skip_verify", True))
+    rancher_version = str(config.get("versions", {}).get("rancher", ""))
+    rancher_registry = (
+        "registry.rancher.cn"
+        if rancher_version.endswith("-ent")
+        else "registry.rancher.com"
+    )
+    return {
+        "enabled": True,
+        "systemDefaultRegistry": "",
+        "configs": [
+            {
+                "hostname": harbor,
+                "authConfigSecretName": "myharbor-auth",
+                "tlsSecretName": "",
+                "caBundle": "",
+                "insecure": insecure,
+            }
+        ],
+        "mirrors": [
+            {"hostname": "docker.io", "endpoints": [f"https://{harbor}"]},
+            {
+                "hostname": "dp.apps.rancher.io",
+                "endpoints": [f"https://{harbor}"],
+                "rewrites": {"(^.+$)": "dp.apps.rancher.io/$1"},
+            },
+            {"hostname": "ghcr.io", "endpoints": ["https://ghcr.zscr.io"], "rewrites": {}},
+            {
+                "hostname": "k8s.gcr.io",
+                "endpoints": [f"https://{harbor}"],
+                "rewrites": {"(^.+$)": "registry.k8s.io/$1"},
+            },
+            {
+                "hostname": "quay.io",
+                "endpoints": [f"https://{harbor}"],
+                "rewrites": {"(^.+$)": "quay.io/$1"},
+            },
+            {
+                "hostname": "registry.k8s.io",
+                "endpoints": [f"https://{harbor}"],
+                "rewrites": {"(^.+$)": "registry.k8s.io/$1"},
+            },
+            {"hostname": rancher_registry, "endpoints": [f"https://{harbor}"]},
+            {
+                "hostname": "registry.suse.com",
+                "endpoints": [f"https://{harbor}"],
+                "rewrites": {"(^.+$)": "registry.suse.com/$1"},
+            },
+        ],
+    }
+
+
+def _default_local_rke2_registry(config: dict[str, Any]) -> dict[str, Any]:
+    """Secret-free reference registry defaults for the Local RKE2 cluster."""
+    registry = config.get("registry", {})
+    hostname = str(registry.get("hostname", ""))
+    rancher_version = str(config.get("versions", {}).get("rancher", ""))
+    rancher_registry = (
+        "registry.rancher.cn"
+        if rancher_version.endswith("-ent")
+        else "registry.rancher.com"
+    )
+    auth_enabled = bool(registry.get("username") and registry.get("password_ref"))
+    return {
+        "mirrors": {
+            "docker.io": {"endpoints": [f"https://{hostname}"]},
+            rancher_registry: {"endpoints": [f"https://{hostname}"], "rewrites": {}},
+        },
+        "configs": {
+            hostname: {
+                "auth": {
+                    "enabled": auth_enabled,
+                    "username": str(registry.get("username") or ""),
+                    "password_ref": registry.get("password_ref"),
+                },
+                "tls": {
+                    "insecure_skip_verify": bool(
+                        registry.get("insecure_skip_verify", False)
+                    ),
+                    "ca_file": "",
+                },
+            }
+        },
+    }
+
+
+def effective_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Expand execution-time defaults for user review without resolving secrets.
+
+    Returns the submitted configuration plus the reference downstream rkeConfig,
+    downstream registries, and Local RKE2 registry defaults that the executors
+    would otherwise apply.  Explicitly submitted values are preserved as-is.
+    """
+    result = copy.deepcopy(config)
+    downstream = result.setdefault("downstream_cluster", {})
+    if not downstream.get("rke_config"):
+        downstream["rke_config"] = _default_downstream_rke_config()
+    if not downstream.get("registries"):
+        downstream["registries"] = _default_downstream_registries(result)
+    local = result.setdefault("local_rke2", {})
+    if "registry" not in local:
+        local["registry"] = _default_local_rke2_registry(result)
+    return result
+
 
 class VmExecutor:
     """Run the VM-only Terraform bundle on the declared SSH control host.
@@ -609,16 +724,7 @@ class LocalRke2Executor(VmExecutor):
         hostname = str(registry["hostname"])
         mirrors = local_registry.get("mirrors")
         if mirrors is None:
-            rancher_version = str(config.get("versions", {}).get("rancher", ""))
-            rancher_registry = (
-                "registry.rancher.cn"
-                if rancher_version.endswith("-ent")
-                else "registry.rancher.com"
-            )
-            mirrors = {
-                "docker.io": {"endpoints": [f"https://{hostname}"]},
-                rancher_registry: {"endpoints": [f"https://{hostname}"], "rewrites": {}},
-            }
+            mirrors = _default_local_rke2_registry(config)["mirrors"]
         configs = local_registry.get("configs")
         if configs is None:
             auth_enabled = bool(registry.get("username") and registry.get("password_ref"))
@@ -1025,69 +1131,7 @@ class DownstreamExecutor(RancherExecutor):
 
     def _default_downstream_registries(self, config: dict[str, Any]) -> dict[str, Any]:
         """Reference Harbor mirror defaults from the validated downstream skill."""
-        harbor = str(config.get("registry", {}).get("hostname", ""))
-        insecure = bool(
-            config.get("registry", {}).get("insecure_skip_verify", True)
-        )
-        rancher_version = str(config.get("versions", {}).get("rancher", ""))
-        rancher_registry = (
-            "registry.rancher.cn"
-            if rancher_version.endswith("-ent")
-            else "registry.rancher.com"
-        )
-        return {
-            "enabled": True,
-            "systemDefaultRegistry": "",
-            "configs": [
-                {
-                    "hostname": harbor,
-                    "authConfigSecretName": "myharbor-auth",
-                    "tlsSecretName": "",
-                    "caBundle": "",
-                    "insecure": insecure,
-                }
-            ],
-            "mirrors": [
-                {
-                    "hostname": "docker.io",
-                    "endpoints": [f"https://{harbor}"],
-                },
-                {
-                    "hostname": "dp.apps.rancher.io",
-                    "endpoints": [f"https://{harbor}"],
-                    "rewrites": {"(^.+$)": "dp.apps.rancher.io/$1"},
-                },
-                {
-                    "hostname": "ghcr.io",
-                    "endpoints": ["https://ghcr.zscr.io"],
-                    "rewrites": {},
-                },
-                {
-                    "hostname": "k8s.gcr.io",
-                    "endpoints": [f"https://{harbor}"],
-                    "rewrites": {"(^.+$)": "registry.k8s.io/$1"},
-                },
-                {
-                    "hostname": "quay.io",
-                    "endpoints": [f"https://{harbor}"],
-                    "rewrites": {"(^.+$)": "quay.io/$1"},
-                },
-                {
-                    "hostname": "registry.k8s.io",
-                    "endpoints": [f"https://{harbor}"],
-                    "rewrites": {"(^.+$)": "registry.k8s.io/$1"},
-                },
-                {
-                    "hostname": rancher_registry,
-                    "endpoints": [f"https://{harbor}"],
-                },
-                {
-                    "hostname": "registry.suse.com",
-                    "endpoints": [f"https://{harbor}"],
-                    "rewrites": {"(^.+$)": "registry.suse.com/$1"},
-                },
-            ],
-        }
+        return _default_downstream_registries(config)
 
     def _versions_tf(self, config: dict[str, Any]) -> str:
         template = (self.assets_root / "terraform" / "versions.tf.tmpl").read_text(

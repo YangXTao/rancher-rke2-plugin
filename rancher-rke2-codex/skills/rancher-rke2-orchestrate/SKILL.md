@@ -16,8 +16,11 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
 3. Require `https`, `plaintext_credentials_compatible: false`, and
    `docker-secret` reference support. Do not send a configuration containing
    plaintext credential fields.
-4. Call `validate_config`. Show validation errors and the server's safe preview;
-   never request, resolve, or reproduce secret values.
+4. Call `validate_config`. Show validation errors and the server's safe preview.
+   Present the returned `effective_config` — the complete configuration with
+   execution defaults expanded (including `downstream_cluster.registries` and
+   rkeConfig) — and obtain explicit user confirmation before building a plan.
+   Never request, resolve, or reproduce secret values.
 5. Resolve `target_components`. For a full run use this fixed order:
    `vm`, `node-init`, `local-rke2`, `rancher`, `downstream`.
 6. Call `build_plan` with the returned `config_digest`.

@@ -18,7 +18,7 @@
       "name": "validate_config",
       "mutation": false,
       "required": ["config"],
-      "purpose": "Validate and normalize configuration; return config_digest and a redacted preview."
+      "purpose": "Validate and normalize configuration; return config_digest, a redacted preview, and the effective_config with execution defaults expanded (downstream rkeConfig/registries and Local RKE2 registry defaults)."
     },
     {
       "name": "build_plan",

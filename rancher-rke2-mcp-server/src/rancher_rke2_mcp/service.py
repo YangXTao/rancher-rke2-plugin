@@ -21,7 +21,6 @@ from .constants import (
     SECRET_REFERENCE_SCHEMES,
     SERVER_VERSION,
 )
-from .preflight import NonMutatingPreflight
 from .executor import (
     DownstreamExecutor,
     ExecutionResult,
@@ -29,7 +28,10 @@ from .executor import (
     NodeInitExecutor,
     RancherExecutor,
     VmExecutor,
+    effective_config,
 )
+from .preflight import NonMutatingPreflight
+from .redaction import redact
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
@@ -173,6 +175,9 @@ class ReadOnlyPlanningService:
                 "config_digest": outcome.config_digest,
                 "validated_at": created_at,
                 "redacted_preview": outcome.redacted_preview,
+                "effective_config": redact(
+                    effective_config(outcome.normalized)
+                ),
             },
             warnings=outcome.warnings,
         )

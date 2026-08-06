@@ -1,4 +1,14 @@
-# Rancher/RKE2 MCP Server 0.10.6
+# Rancher/RKE2 MCP Server 0.10.7
+
+## 0.10.7 effective configuration in validate_config
+
+`validate_config` now returns an `effective_config` document alongside the
+redacted preview: the submitted configuration with execution defaults expanded
+(downstream rkeConfig, downstream registries, and Local RKE2 registry defaults,
+including the edition-aware Rancher mirror), redacted and free of resolved
+secrets. Clients present this complete configuration for explicit confirmation
+before building a plan. `downstream_cluster.rkeConfig` is accepted as an alias
+for `rke_config` so the user-facing camelCase form matches the reference.
 
 ## 0.10.6 downstream registration group variables
 
