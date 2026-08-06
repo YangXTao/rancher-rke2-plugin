@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.10.0",
+  "contract_version": "0.10.8",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -43,6 +43,13 @@
       "mutation": false,
       "required": ["preflight_id"],
       "purpose": "Read a persisted non-mutating preflight result while its associated plan remains valid."
+    },
+    {
+      "name": "render_runbook",
+      "mutation": false,
+      "required": ["plan_id"],
+      "optional": ["format", "output_profile"],
+      "purpose": "Render an audited human-executable installation manual from an immutable plan and the expanded effective configuration, and write the audited deliverable to the control host workspace when the audit passes."
     },
     {
       "name": "start_run",
@@ -96,13 +103,6 @@
       "required": ["run_id"],
       "optional": ["component", "depth"],
       "purpose": "Collect redacted evidence and hypotheses without making changes."
-    },
-    {
-      "name": "render_runbook",
-      "mutation": false,
-      "required": ["plan_id", "format"],
-      "optional": ["output_profile"],
-      "purpose": "Render an audited human-executable installation manual from a plan."
     },
     {
       "name": "destroy_vm_set",

@@ -118,6 +118,19 @@ def create_server(
         return service.get_preflight(preflight_id)
 
     @server.tool()
+    def render_runbook(
+        plan_id: str,
+        format: str | None = None,
+        output_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Render an audited human-executable installation manual from a plan."""
+        return service.render_runbook(
+            plan_id,
+            format=format or "markdown",
+            output_profile=output_profile or "human-step-by-step",
+        )
+
+    @server.tool()
     def start_run(
         plan_id: str,
         config_digest: str,

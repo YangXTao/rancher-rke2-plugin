@@ -24,6 +24,7 @@ READ_ONLY_TOOLS = (
     "get_plan",
     "preflight_plan",
     "get_preflight",
+    "render_runbook",
     "get_run",
     "get_run_events",
 )
@@ -31,8 +32,8 @@ READ_ONLY_TOOLS = (
 MUTATION_TOOLS = ("start_run", "start_workflow")
 
 SCHEMA_VERSION = "0.10.0"
-CONTRACT_VERSION = "0.10.0"
-SERVER_VERSION = "0.10.7"
+CONTRACT_VERSION = "0.10.8"
+SERVER_VERSION = "0.10.8"
 MAX_YAML_BYTES = 1024 * 1024
 PLAN_TTL_HOURS = 24
 PREFLIGHT_TCP_TIMEOUT_SECONDS = 5.0

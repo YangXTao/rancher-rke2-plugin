@@ -1,4 +1,15 @@
-# Rancher/RKE2 MCP Server 0.10.7
+# Rancher/RKE2 MCP Server 0.10.8
+
+## 0.10.8 audited installation manual delivery
+
+`render_runbook(plan_id, format, output_profile)` renders the 15-chapter
+human-executable installation manual from an immutable plan and the expanded
+effective configuration, runs the strict audit (ported from the validated
+standalone skill), and writes the audited deliverable to the control host
+workspace only when the audit passes. After a successful run, when
+`deliverables.installation_manual: true` the same audited manual is generated
+automatically under `runs/<run_id>/deliverables/` and announced with a
+`RUNBOOK_DELIVERED` run event. The contract version is now 0.10.8.
 
 ## 0.10.7 effective configuration in validate_config
 

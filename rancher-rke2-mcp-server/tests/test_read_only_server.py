@@ -299,7 +299,8 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
             assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
-            assert len(names) == 11
+            assert len(names) == 12
+            assert "render_runbook" in names
             capability = await client.call_tool("get_capabilities", {})
             assert capability.structured_content["ok"] is True
             assert capability.structured_content["data"]["mutation_tools"] == [
@@ -681,6 +682,69 @@ def test_successful_executor_persists_vm_result(tmp_path: Path) -> None:
     stored = service.get_run(result["data"]["run"]["run_id"])
     assert stored["state"] == "SUCCEEDED"
     assert stored["data"]["run"]["component_states"][0]["artifact_path"].endswith("/vm")
+
+
+def test_render_runbook_returns_audited_manual(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["all"])["data"]["plan"]
+    result = service.render_runbook(plan["plan_id"])
+    assert result["ok"] is True
+    assert result["state"] == "RENDERED"
+    data = result["data"]
+    assert data["format"] == "markdown"
+    assert data["output_profile"] == "human-step-by-step"
+    assert data["audit"]["passed"] is True
+    assert data["audit"]["failures"] == []
+    assert "审核结论: PASS" in data["manual"]
+    assert "# RKE2 与 Rancher 人工安装操作手册" in data["manual"]
+    assert data["artifact_path"].endswith(".md")
+    assert any(
+        "control host artifact could not be written" in item
+        for item in result["warnings"]
+    )
+
+
+def test_render_runbook_rejects_unknown_plan(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    result = service.render_runbook("plan-does-not-exist")
+    assert result["ok"] is False
+    assert result["state"] == "NOT_FOUND"
+
+
+def test_post_run_delivers_runbook_when_installation_manual_true(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    config_yaml = EXAMPLE.replace(
+        "installation_manual: ask", "installation_manual: true"
+    )
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=SuccessfulExecutor(),
+    )
+    digest = service.validate_config(config_yaml)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="vm-runbook-delivery",
+    )
+    stored = service.get_run(result["data"]["run"]["run_id"])
+    assert stored["state"] == "SUCCEEDED"
+    events = service.get_run_events(result["data"]["run"]["run_id"])["data"][
+        "events"
+    ]
+    event_types = [event["type"] for event in events]
+    assert "RUNBOOK_DELIVERY_UNAVAILABLE" in event_types
 
 
 def test_reads_bearer_token_from_secret_file(tmp_path: Path) -> None:

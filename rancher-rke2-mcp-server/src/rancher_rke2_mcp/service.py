@@ -32,6 +32,7 @@ from .executor import (
 )
 from .preflight import NonMutatingPreflight
 from .redaction import redact
+from .runbook import render_and_audit
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
 from .validation import config_schema, validate
@@ -180,6 +181,109 @@ class ReadOnlyPlanningService:
                 ),
             },
             warnings=outcome.warnings,
+        )
+
+    def render_runbook(
+        self,
+        plan_id: str,
+        *,
+        format: str = "markdown",
+        output_profile: str = "human-step-by-step",
+    ) -> dict[str, Any]:
+        """Render an audited human-executable manual from an immutable plan."""
+        if format != "markdown":
+            return _envelope(
+                ok=False,
+                state="UNSUPPORTED_FORMAT",
+                errors=[
+                    {
+                        "path": "format",
+                        "message": "Only markdown format is supported.",
+                    }
+                ],
+            )
+        if output_profile != "human-step-by-step":
+            return _envelope(
+                ok=False,
+                state="UNSUPPORTED_PROFILE",
+                errors=[
+                    {
+                        "path": "output_profile",
+                        "message": "Only the human-step-by-step profile is supported.",
+                    }
+                ],
+            )
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        config = self.store.get_config(plan["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The configuration for this plan is unavailable.",
+                    }
+                ],
+            )
+        try:
+            manual, audit_result = render_and_audit(config, plan)
+        except Exception:
+            LOGGER.exception("Runbook rendering failed for plan %s", plan_id)
+            return _envelope(
+                ok=False,
+                state="INTERNAL_ERROR",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "Runbook rendering failed; see server logs.",
+                    }
+                ],
+            )
+        workspace = str(config["run"]["workspace"]).rstrip("/")
+        artifact_path = (
+            f"{workspace}/plans/{plan_id}/deliverables/"
+            f"RKE2_Rancher_Install_{plan_id}.md"
+        )
+        data = {
+            "plan_id": plan_id,
+            "format": format,
+            "output_profile": output_profile,
+            "manual": manual,
+            "audit": audit_result,
+            "artifact_path": artifact_path,
+        }
+        warnings: list[str] = []
+        if audit_result["passed"]:
+            try:
+                assert self.executor is not None
+                self.executor.write_artifact(config, artifact_path, manual)
+            except Exception:
+                LOGGER.exception(
+                    "Runbook artifact write failed for plan %s", plan_id
+                )
+                warnings.append(
+                    "Audit passed, but the control host artifact could not be "
+                    "written; the manual is returned inline above."
+                )
+            else:
+                data["artifact_written"] = True
+        else:
+            warnings.append(
+                "Audit did not pass; the manual is returned for review only "
+                "and is not a deliverable."
+            )
+        return _envelope(
+            ok=bool(audit_result["passed"]),
+            state="RENDERED" if audit_result["passed"] else "AUDIT_FAILED",
+            data=data,
+            warnings=warnings,
         )
 
     def build_plan(
@@ -909,6 +1013,7 @@ class ReadOnlyPlanningService:
                 ],
             },
         )
+        self._maybe_deliver_runbook(run, config)
 
     def _wait_for_workflow_nodes(self, config: dict[str, Any]) -> bool:
         deadline = time.monotonic() + WORKFLOW_NODE_READY_TIMEOUT_SECONDS
@@ -1058,6 +1163,76 @@ class ReadOnlyPlanningService:
                 "component": run["target_components"][0],
                 "artifact_path": result.artifact_path,
                 "message": result.message or result.code,
+            },
+        )
+        if result.succeeded:
+            config = self.store.get_config(run["config_digest"])
+            if config is not None:
+                self._maybe_deliver_runbook(run, config)
+
+    def _maybe_deliver_runbook(
+        self, run: dict[str, Any], config: dict[str, Any]
+    ) -> None:
+        """Generate the audited manual after a successful run when requested."""
+        manual_setting = (config.get("deliverables") or {}).get(
+            "installation_manual"
+        )
+        if manual_setting is not True:
+            return
+        plan = self.store.get_plan(run["plan_id"])
+        if plan is None:
+            return
+        run_id = run["run_id"]
+        workspace = str(config["run"]["workspace"]).rstrip("/")
+        artifact_path = (
+            f"{workspace}/runs/{run_id}/deliverables/"
+            f"RKE2_Rancher_Install_{run_id}.md"
+        )
+        now = _iso(_now())
+        try:
+            manual, audit_result = render_and_audit(config, plan, run)
+        except Exception:
+            LOGGER.exception("Post-run runbook rendering failed for run %s", run_id)
+            self.store.append_run_event(
+                run_id,
+                now,
+                {
+                    "type": "RUNBOOK_RENDER_FAILED",
+                    "message": "The installation manual could not be rendered.",
+                },
+            )
+            return
+        if not audit_result["passed"]:
+            self.store.append_run_event(
+                run_id,
+                now,
+                {
+                    "type": "RUNBOOK_AUDIT_FAILED",
+                    "message": "The rendered installation manual did not pass audit.",
+                },
+            )
+            return
+        try:
+            assert self.executor is not None
+            self.executor.write_artifact(config, artifact_path, manual)
+        except Exception:
+            LOGGER.exception("Runbook artifact write failed for run %s", run_id)
+            self.store.append_run_event(
+                run_id,
+                now,
+                {
+                    "type": "RUNBOOK_DELIVERY_UNAVAILABLE",
+                    "message": "Manual audit passed, but the control host artifact could not be written.",
+                },
+            )
+            return
+        self.store.append_run_event(
+            run_id,
+            now,
+            {
+                "type": "RUNBOOK_DELIVERED",
+                "artifact_path": artifact_path,
+                "message": f"Audited installation manual written to {artifact_path}.",
             },
         )
 
