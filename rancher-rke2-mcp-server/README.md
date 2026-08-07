@@ -1,4 +1,13 @@
-# Rancher/RKE2 MCP Server 0.11.2
+# Rancher/RKE2 MCP Server 0.11.3
+
+## 0.11.3 component-artifact lookup matches succeeded workflows
+
+`latest_succeeded_component_run` now recognizes a component that succeeded as
+part of a workflow run (for example `rancher` inside `vm -> node-init ->
+local-rke2 -> rancher`), not only standalone single-component runs. Downstream
+can therefore reuse the Rancher private-CA artifact from a succeeded four-stage
+workflow, and Rancher can reuse the Local RKE2 kubeconfig from a succeeded
+three-stage workflow.
 
 ## 0.11.2 effective config and registry.rancher.cn mirror policy
 

@@ -391,7 +391,14 @@ def test_start_run_downstream_reuses_rancher_ca_artifact(tmp_path: Path) -> None
             "created_at": "2026-08-06T00:00:00Z",
             "updated_at": "2026-08-06T00:00:00Z",
             "execution_backend": "ssh-control-container",
-            "component_states": [],
+            "component_states": [
+                {
+                    "component": "rancher",
+                    "state": "SUCCEEDED",
+                    "checkpoint": "completed",
+                    "message": "RANCHER_SUCCEEDED",
+                }
+            ],
         }
     )
     plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
@@ -412,6 +419,109 @@ def test_start_run_downstream_reuses_rancher_ca_artifact(tmp_path: Path) -> None
     assert submitted_config["_rancher_ca_source"] == (
         "/data/rancher/automation/runs/run-rancher-success-000000/"
         "rancher/cert/output/cacerts.pem"
+    )
+
+
+def test_start_run_downstream_reuses_rancher_artifact_from_workflow(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    downstream_executor = CapturingExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        downstream_executor=downstream_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    service.store.save_run(
+        {
+            "run_id": "run-workflow-rancher-success",
+            "state": "SUCCEEDED",
+            "plan_id": "plan-workflow-seed",
+            "config_digest": digest,
+            "preflight_id": "preflight-workflow-seed",
+            "target_components": ["vm", "node-init", "local-rke2", "rancher"],
+            "created_at": "2026-08-06T00:00:00Z",
+            "updated_at": "2026-08-06T00:00:00Z",
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {"component": "vm", "state": "SUCCEEDED"},
+                {"component": "node-init", "state": "SUCCEEDED"},
+                {"component": "local-rke2", "state": "SUCCEEDED"},
+                {"component": "rancher", "state": "SUCCEEDED"},
+            ],
+        }
+    )
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="downstream-from-workflow",
+    )
+    assert result["ok"] is True
+    assert result["state"] == "QUEUED"
+    submitted_config = downstream_executor.submitted["config"]
+    assert isinstance(submitted_config, dict)
+    assert submitted_config["_rancher_ca_source"] == (
+        "/data/rancher/automation/runs/run-workflow-rancher-success/"
+        "rancher/cert/output/cacerts.pem"
+    )
+
+
+def test_start_run_rancher_reuses_local_rke2_artifact_from_workflow(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    rancher_executor = CapturingExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        rancher_executor=rancher_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    service.store.save_run(
+        {
+            "run_id": "run-workflow-local-success",
+            "state": "SUCCEEDED",
+            "plan_id": "plan-workflow-local-seed",
+            "config_digest": digest,
+            "preflight_id": "preflight-workflow-local-seed",
+            "target_components": ["vm", "node-init", "local-rke2"],
+            "created_at": "2026-08-06T00:00:00Z",
+            "updated_at": "2026-08-06T00:00:00Z",
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {"component": "vm", "state": "SUCCEEDED"},
+                {"component": "node-init", "state": "SUCCEEDED"},
+                {"component": "local-rke2", "state": "SUCCEEDED"},
+            ],
+        }
+    )
+    plan = service.build_plan(digest, ["rancher"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="rancher-from-workflow",
+    )
+    assert result["ok"] is True
+    assert result["state"] == "QUEUED"
+    submitted_config = rancher_executor.submitted["config"]
+    assert isinstance(submitted_config, dict)
+    assert submitted_config["_rancher_kubeconfig_source"] == (
+        "/data/rancher/automation/runs/run-workflow-local-success/"
+        "kubeconfig/rke2.yaml"
     )
 
 

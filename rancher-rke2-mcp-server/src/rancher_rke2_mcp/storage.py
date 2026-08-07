@@ -192,7 +192,12 @@ class SQLiteStore:
     def latest_succeeded_component_run(
         self, config_digest: str, component: str
     ) -> dict[str, Any] | None:
-        """Return the newest successful component run for this config."""
+        """Return the newest successful run containing the component.
+
+        A component can succeed either as a standalone single-component run or
+        as one stage of a succeeded workflow, so the lookup matches both the
+        run state and the persisted component state.
+        """
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -204,10 +209,15 @@ class SQLiteStore:
             ).fetchall()
         for row in rows:
             run = json.loads(row["run_json"])
-            if (
-                run.get("state") == "SUCCEEDED"
-                and run.get("target_components") == [component]
-            ):
+            if run.get("state") != "SUCCEEDED":
+                continue
+            if component not in run.get("target_components", []):
+                continue
+            states = {
+                item.get("component"): item.get("state")
+                for item in run.get("component_states", [])
+            }
+            if states.get(component) == "SUCCEEDED":
                 return run
         return None
 
