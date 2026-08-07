@@ -1171,6 +1171,9 @@ def test_vm_proxy_environment_is_limited_to_dependency_downloads() -> None:
     executor_source = (PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py").read_text(encoding="utf-8")
 
     assert 'source "$run_dir/.dependency.env"' in installer
+    assert 'Acquire::http::Proxy=$HTTP_PROXY' in installer
+    assert 'Acquire::https::Proxy=$HTTP_PROXY' in installer
+    assert 'curl_args+=(--proxy "$HTTP_PROXY")' in installer
     assert "DEPENDENCY_ENV_MISSING" in runner
     assert "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy" in runner
     assert "def _dependency_env" in executor_source

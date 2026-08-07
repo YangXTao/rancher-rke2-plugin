@@ -12,6 +12,14 @@ source "$run_dir/.dependency.env"
 set +a
 export DEBIAN_FRONTEND=noninteractive
 
+# apt-get does not honor http_proxy/HTTP_PROXY environment variables, so the
+# inherited dependency proxy (from .dependency.env) must be passed explicitly.
+proxy_apt_args=()
+if [[ -n "${HTTP_PROXY:-}" ]]; then
+  proxy_apt_args+=("-o" "Acquire::http::Proxy=$HTTP_PROXY")
+  proxy_apt_args+=("-o" "Acquire::https::Proxy=$HTTP_PROXY")
+fi
+
 protect_readonly_localtime() {
   command -v apt-mark >/dev/null 2>&1 || return 0
   command -v dpkg-query >/dev/null 2>&1 || return 0
@@ -21,9 +29,9 @@ protect_readonly_localtime() {
 }
 
 install_apt_dependencies() {
-  apt-get update
+  apt-get "${proxy_apt_args[@]}" update
   protect_readonly_localtime
-  if apt-get install -y --no-upgrade ca-certificates curl unzip python3 iputils-ping; then
+  if apt-get "${proxy_apt_args[@]}" install -y --no-upgrade ca-certificates curl unzip python3 iputils-ping; then
     protect_readonly_localtime
     return 0
   fi
@@ -47,7 +55,7 @@ install_apt_dependencies() {
     fi
     mv -f "$backup" "$postinst"
     protect_readonly_localtime
-    apt-get install -f -y --no-upgrade
+    apt-get "${proxy_apt_args[@]}" install -f -y --no-upgrade
     return 0
   fi
   return 1
@@ -64,7 +72,9 @@ if ! command -v terraform >/dev/null 2>&1 || ! terraform version | grep -Fq "v${
   archive="/software/terraform/terraform_${terraform_version}_linux_amd64.zip"
   if [[ ! -s "$archive" ]]; then
     [[ "$mode" == online ]] || { echo "OFFLINE_FILE_MISSING:$archive" >&2; exit 10; }
-    curl --fail --location --retry 3 -o "$archive" \
+    curl_args=(--fail --location --retry 3)
+    [[ -n "${HTTP_PROXY:-}" ]] && curl_args+=(--proxy "$HTTP_PROXY")
+    curl "${curl_args[@]}" -o "$archive" \
       "https://releases.hashicorp.com/terraform/${terraform_version}/terraform_${terraform_version}_linux_amd64.zip"
   fi
   temporary_dir=$(mktemp -d)
