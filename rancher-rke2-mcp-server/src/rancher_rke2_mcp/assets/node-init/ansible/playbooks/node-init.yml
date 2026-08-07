@@ -5,9 +5,14 @@
   tasks:
     - name: Ensure Python 3 is present before Ansible collects facts
       ansible.builtin.raw: >-
-        if command -v python3 >/dev/null 2>&1; then exit 0; fi;
-        if command -v dnf >/dev/null 2>&1; then dnf install -y python3; exit $?; fi;
-        if command -v yum >/dev/null 2>&1; then yum install -y python3; exit $?; fi;
+        if python3 --version 2>/dev/null | grep -qE 'Python 3\.(7|8|9|1[0-9])'; then exit 0; fi;
+        if command -v dnf >/dev/null 2>&1; then
+          (dnf install -y python3.11 || dnf install -y python39) || exit $?;
+          ln -sf /usr/bin/python3.11 /usr/local/bin/python3 2>/dev/null ||
+            ln -sf /usr/bin/python3.9 /usr/local/bin/python3 2>/dev/null || true;
+          exit 0;
+        fi;
+        if command -v yum >/dev/null 2>&1; then yum install -y python3.11 || exit $?; exit 0; fi;
         if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y python3; exit $?; fi;
         exit 1
       changed_when: false
@@ -18,4 +23,3 @@
   gather_facts: true
   roles:
     - role: node_init
-
