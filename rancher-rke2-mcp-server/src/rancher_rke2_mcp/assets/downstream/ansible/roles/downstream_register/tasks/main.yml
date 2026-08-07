@@ -1,11 +1,26 @@
 ---
+- name: Detect downstream OS branch for the kernel policy
+  ansible.builtin.set_fact:
+    downstream_os_branch: >-
+      {{
+        'kylin-v11' if 'kylin' in (ansible_distribution | lower)
+        else 'ubuntu' if ansible_os_family == 'Debian'
+        else 'redhat' if ansible_os_family == 'RedHat'
+        else 'unsupported'
+      }}
+
+- name: Select the per-distribution minimum kernel
+  ansible.builtin.set_fact:
+    downstream_required_kernel: >-
+      {{ downstream_minimum_kernels.get(downstream_os_branch, downstream_minimum_kernel) }}
+
 - name: Validate downstream roles
   ansible.builtin.assert:
     that:
       - rancher_node_roles | length > 0
       - rancher_node_roles | difference(['etcd', 'controlplane', 'worker']) | length == 0
-      - ansible_kernel is version(downstream_minimum_kernel, '>=')
-    fail_msg: "Invalid roles or kernel below {{ downstream_minimum_kernel }} on {{ inventory_hostname }}"
+      - ansible_kernel is version(downstream_required_kernel, '>=')
+    fail_msg: "Invalid roles or kernel below {{ downstream_required_kernel }} on {{ inventory_hostname }}"
 
 - name: Read protected Rancher registration command
   ansible.builtin.slurp:

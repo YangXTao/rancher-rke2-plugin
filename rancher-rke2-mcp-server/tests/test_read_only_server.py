@@ -598,7 +598,7 @@ def test_downstream_inventory_carries_registration_vars(tmp_path: Path) -> None:
         "/data/rancher/automation/runs/run-test-0001/downstream/"
         "secrets/downstream-registration-command"
     )
-    assert all_vars["downstream_minimum_kernel"] == "5.8"
+    assert all_vars["downstream_minimum_kernel"] == "4.18"
     assert all_vars["downstream_registration_require_insecure_curl"] is True
 
 

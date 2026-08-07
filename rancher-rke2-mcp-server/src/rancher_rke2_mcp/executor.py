@@ -1122,7 +1122,7 @@ class DownstreamExecutor(RancherExecutor):
                     "downstream_registration_command_file": (
                         f"{run_dir}/secrets/downstream-registration-command"
                     ),
-                    "downstream_minimum_kernel": "5.8",
+                    "downstream_minimum_kernel": "4.18",
                     "downstream_registration_require_insecure_curl": True,
                 },
                 "children": {
@@ -1157,6 +1157,6 @@ class DownstreamExecutor(RancherExecutor):
             "downstream_registration_command_file": (
                 f"{run_dir}/secrets/downstream-registration-command"
             ),
-            "downstream_minimum_kernel": "5.8",
+            "downstream_minimum_kernel": "4.18",
             "downstream_registration_require_insecure_curl": True,
         }
