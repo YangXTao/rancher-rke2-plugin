@@ -1,4 +1,15 @@
-# Rancher RKE2 Codex Plugin 0.9.9
+# Rancher RKE2 Codex Plugin 0.11.0
+
+## 0.11.0 downstream custom cluster execution
+
+`start_run` now supports the single `downstream` component after a successful
+`rancher` run using the same validated configuration. The server reuses the
+durable Rancher private-CA certificate artifact, creates `rancher2_cluster_v2`
+with the complete `downstream_cluster.rkeConfig` and `registries`, and
+registers every custom node in the approved role order (first control-plane and
+first worker together, then remaining control-planes, then remaining workers).
+
+## 0.9.9 NodePort verification target
 
 ## 0.9.9 NodePort verification target
 

@@ -78,16 +78,133 @@ versions:
 local_rke2:
   cni: cilium
   disable_kube_proxy: false
+  # registries 省略时使用参考默认：启用 Harbor（registry.hostname）+ myharbor-auth
+  # + 完整镜像集（docker.io 无 rewrites；Rancher 域按版本选择，ent->registry.rancher.cn，非 ent->registry.rancher.com）。
+  # 除非手工覆盖，否则无需填写
 
 rancher:
   bootstrap_password_ref: "docker-secret://rancher_bootstrap_password"
   nodeport: 30080
   replicas: 3
+  # Rancher Helm 安装参数参考（实际执行使用已验证 skill 资产中的同参数）：
+  # standard:
+  #   helm upgrade --install rancher "${RANCHER_CHART}" --namespace cattle-system \
+  #     --create-namespace \
+  #     --set-string hostname="${RANCHER_HOSTNAME}" \
+  #     --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+  #     --set tls=external --set privateCA=true --set ingress.enabled=false \
+  #     --set service.type=ClusterIP --set useBundledSystemChart=true \
+  #     --set additionalTrustedCAs=false --set replicas=3 \
+  #     --set-string rancherImage="${RANCHER_IMAGE}" \
+  #     --kubeconfig "${RANCHER_KUBECONFIG}" --wait --timeout 15m
+  # enterprise:
+  #   helm upgrade --install rancher "${RANCHER_CHART}" --namespace cattle-system \
+  #     --create-namespace \
+  #     --set auditLog.enabled=true --set auditLog.destination=hostPath \
+  #     --set auditLog.maxAge=180 --set auditLog.level=3 \
+  #     --set-string hostname="${RANCHER_HOSTNAME}" \
+  #     --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+  #     --set tls=external --set privateCA=true --set ingress.enabled=false \
+  #     --set service.type=NodePort --set service.nodePort="${RANCHER_HTTP_NODEPORT}" \
+  #     --set useBundledSystemChart=true --set additionalTrustedCAs=false \
+  #     --set replicas=3 \
+  #     --set-string rancherImage="${RANCHER_IMAGE}" \
+  #     --set-string postDelete.image.repository="${POST_DELETE_IMAGE}" \
+  #     --kubeconfig "${RANCHER_KUBECONFIG}" --wait --timeout 15m
 
 downstream_cluster:
   name: downstream
   registration:
     order: [first-controlplane, first-worker, remaining-controlplanes, remaining-workers]
+  # Complete rkeConfig set this automation expects the user to customize.
+  # When omitted, the validated reference defaults below are used.
+  rke_config:
+    chartValues:
+      rke2-cilium:
+        hubble:
+          enabled: true
+          metrics:
+            enableOpenMetrics: true
+            enabled:
+              - "dns:query;ignoreAAAA"
+              - drop
+              - tcp
+              - flow
+              - icmp
+              - http
+              - port-distribution
+          relay:
+            enabled: true
+          ui:
+            enabled: true
+        k8sServiceHost: 127.0.0.1
+        k8sServicePort: "6443"
+        kubeProxyReplacement: true
+    etcd:
+      disableSnapshots: false
+      snapshotRetention: 5
+      snapshotScheduleCron: "0 */5 * * *"
+    machineGlobalConfig:
+      cluster-cidr: 10.42.0.0/16
+      cluster-dns: 10.43.0.10
+      cni: cilium
+      disable-kube-proxy: true
+      etcd-arg:
+        - "--auto-compaction-mode=periodic"
+        - "--auto-compaction-retention=1h0m0s"
+        - "--quota-backend-bytes=6442450944"
+      kube-apiserver-arg:
+        - "--watch-cache=true"
+        - "--default-watch-cache-size=200"
+        - "--max-requests-inflight=400"
+        - "--max-mutating-requests-inflight=200"
+      kube-controller-manager-arg:
+        - "--node-monitor-grace-period=20s"
+        - "--node-startup-grace-period=30s"
+      service-cidr: 10.43.0.0/16
+    machinePools: null
+    machineSelectorConfig:
+      - config:
+          kubelet-arg:
+            - "kube-reserved=cpu=1,memory=2048Mi"
+            - "system-reserved=cpu=1,memory=2048Mi"
+            - "container-log-max-files=5"
+            - "container-log-max-size=100Mi"
+            - "cgroups-per-qos=true"
+            - "enforce-node-allocatable=pods"
+            - "eviction-hard=memory.available<256Mi,nodefs.available<10%,imagefs.available<15%,nodefs.inodesFree<5%"
+            - "eviction-soft=memory.available<512Mi,nodefs.available<15%,imagefs.available<20%,nodefs.inodesFree<10%"
+            - "eviction-soft-grace-period=memory.available=1m30s,nodefs.available=1m30s,imagefs.available=1m30s,nodefs.inodesFree=1m30s"
+            - "eviction-max-pod-grace-period=30"
+            - "eviction-pressure-transition-period=30s"
+            - "max-open-files=1000000"
+            - "registry-burst=10"
+            - "registry-qps=0"
+            - "serialize-image-pulls=false"
+            - "sync-frequency=30s"
+            - "max-pods=999"
+          protect-kernel-defaults: false
+  # registries 省略时使用参考默认：启用 Harbor（registry.hostname）+ myharbor-auth
+  # + 完整镜像集（docker.io 无 rewrites；Rancher 域按版本选择，ent->registry.rancher.cn，非 ent->registry.rancher.com）。
+  # 除非手工覆盖，否则无需填写
+  registries:
+    enabled: true
+    systemDefaultRegistry: ""
+    configs:
+      - hostname: "registry.example.internal"
+        authConfigSecretName: myharbor-auth
+        tlsSecretName: ""
+        caBundle: ""
+        insecure: true
+    mirrors:
+      - {hostname: docker.io, endpoints: ["https://registry.example.internal"], rewrites: {}}
+      - {hostname: dp.apps.rancher.io, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "dp.apps.rancher.io/$1"}}
+      - {hostname: ghcr.io, endpoints: ["https://ghcr.zscr.io"], rewrites: {}}
+      - {hostname: k8s.gcr.io, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.k8s.io/$1"}}
+      - {hostname: quay.io, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "quay.io/$1"}}
+      - {hostname: registry.k8s.io, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.k8s.io/$1"}}
+      - {hostname: registry.rancher.cn, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.rancher.cn/$1"}}
+      - {hostname: registry.suse.com, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.suse.com/$1"}}
 
 deliverables:
   installation_manual: ask

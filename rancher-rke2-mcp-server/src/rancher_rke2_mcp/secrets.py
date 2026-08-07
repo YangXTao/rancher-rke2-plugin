@@ -20,6 +20,12 @@ PLAINTEXT_SECRET_KEY_PARTS = (
     "ssh_key",
     "api_key",
 )
+# Rancher2 registry entries reference Kubernetes Secrets by *name* only; the
+# name fields are not credential values and must be accepted verbatim.
+SECRET_NAME_ONLY_FIELDS = (
+    "authconfigsecretname",
+    "tlssecretname",
+)
 
 
 def ensure_reference_only_config(value: Any, path: str = "$") -> None:
@@ -32,6 +38,7 @@ def ensure_reference_only_config(value: Any, path: str = "$") -> None:
             if (
                 any(part in lowered for part in PLAINTEXT_SECRET_KEY_PARTS)
                 and not lowered.endswith("_ref")
+                and lowered not in SECRET_NAME_ONLY_FIELDS
             ):
                 raise ValueError(
                     f"{item_path}: plaintext secret fields are forbidden; "

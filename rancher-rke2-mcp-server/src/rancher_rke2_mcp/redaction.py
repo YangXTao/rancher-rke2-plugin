@@ -12,12 +12,18 @@ SECRET_KEY_PARTS = (
     "credential",
     "private_key",
 )
+# Kubernetes Secret *names* referenced by Rancher2 registry entries are not
+# credential values; keep them visible in redacted previews.
+SECRET_NAME_ONLY_KEYS = (
+    "authconfigsecretname",
+    "tlssecretname",
+)
 URL_CREDENTIALS = re.compile(r"(://)[^/@:\s]+:[^/@\s]+@")
 
 
 def redact(value: Any, key: str = "") -> Any:
     lowered = key.lower()
-    if lowered.endswith("_ref"):
+    if lowered.endswith("_ref") or lowered in SECRET_NAME_ONLY_KEYS:
         return value
     if any(part in lowered for part in SECRET_KEY_PARTS):
         return REDACTED

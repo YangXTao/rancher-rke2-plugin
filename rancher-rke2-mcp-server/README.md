@@ -1,4 +1,19 @@
-# Rancher/RKE2 MCP Server 0.9.9
+# Rancher/RKE2 MCP Server 0.11.0
+
+## 0.11.0 downstream custom cluster execution
+
+`start_run` now supports the single `downstream` component after a successful
+`rancher` run using the same validated configuration. The executor reuses the
+durable Rancher private-CA certificate artifact from that prior run, then runs
+the validated downstream skill assets inside the existing control container:
+the exact `rancher/rancher2` Provider cache under `/software/terraform`,
+Rancher API token handling, `rancher2_cluster_v2` creation with the complete
+`downstream_cluster.rkeConfig` and `registries`, and role-ordered registration
+(first control-plane and first worker together, then remaining control-planes,
+then remaining workers). A downstream plan also preflights the RancherLB HTTPS
+endpoint. Every configured node must report Ready before the run succeeds.
+
+## 0.9.9 NodePort verification target
 
 ## 0.9.9 NodePort verification target
 

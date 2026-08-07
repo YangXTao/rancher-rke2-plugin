@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.9.9",
+  "contract_version": "0.11.0",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -48,7 +48,7 @@
       "name": "start_run",
       "mutation": true,
       "required": ["plan_id", "config_digest", "preflight_id", "approval_text", "idempotency_key"],
-      "purpose": "Validate one component-plan approval gate, then queue VM, node-init, Local RKE2, or Rancher execution on the strict-known-host SSH control host. Rancher requires a successful Local RKE2 component run with the same config digest."
+      "purpose": "Validate one component-plan approval gate, then queue VM, node-init, Local RKE2, Rancher, or downstream execution on the strict-known-host SSH control host. Rancher requires a successful Local RKE2 component run with the same config digest, and downstream requires a successful Rancher run with the same config digest."
     },
     {
       "name": "start_workflow",
@@ -131,7 +131,7 @@
     "preflight_before_mutation_required": true,
     "preflight_performs_authentication": false,
     "preflight_changes_infrastructure": false,
-    "component_execution_scope": ["vm", "node-init", "local-rke2", "rancher"],
+    "component_execution_scope": ["vm", "node-init", "local-rke2", "rancher", "downstream"],
     "workflow_execution_scope": ["vm", "node-init", "local-rke2"],
     "control_host_known_hosts_required": true
   }

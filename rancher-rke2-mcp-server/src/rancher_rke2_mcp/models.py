@@ -181,6 +181,20 @@ class RegistrationConfig(ExtensibleModel):
 class DownstreamClusterConfig(ExtensibleModel):
     name: str = Field(min_length=1)
     registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
+    rke_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Complete downstream Rancher rkeConfig set the user customizes; "
+            "when omitted the validated reference defaults are used."
+        ),
+    )
+    registries: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Downstream Rancher2 registries object; when omitted the validated "
+            "reference Harbor mirror defaults are used."
+        ),
+    )
 
 
 class AutomationConfig(ExtensibleModel):

@@ -58,6 +58,7 @@ class NonMutatingPreflight:
             self._connectivity_checks(
                 config,
                 node_ssh_required="vm" not in planned_components,
+                include_rancher_lb_https="downstream" in planned_components,
             )
         )
         return checks
@@ -128,6 +129,7 @@ class NonMutatingPreflight:
         config: dict[str, Any],
         *,
         node_ssh_required: bool,
+        include_rancher_lb_https: bool,
     ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         control_host = config["execution"]["control_host"]
@@ -166,6 +168,15 @@ class NonMutatingPreflight:
 
         checks.append(self._parsed_tcp_check("tcp.vsphere_https", config["vsphere"]["server"], 443))
         checks.append(self._parsed_tcp_check("tcp.registry_https", config["registry"]["hostname"], 443))
+        if include_rancher_lb_https:
+            lb = config["nodes"]["management"]["load_balancer"]
+            checks.append(
+                self._tcp_check(
+                    "tcp.rancher_lb_https",
+                    str(lb["ip"]),
+                    443,
+                )
+            )
 
         proxy_url = config["downloads"].get("proxy_url", "")
         if proxy_url:

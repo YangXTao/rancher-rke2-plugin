@@ -1,0 +1,40 @@
+---
+- name: Register the first downstream control-plane and worker nodes together
+  hosts: downstream_first_controlplane:downstream_first_worker
+  become: true
+  gather_facts: true
+  roles:
+    - role: downstream_register
+
+- name: Register remaining downstream control-plane nodes
+  hosts: downstream_remaining_controlplanes
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: downstream_register
+
+- name: Register remaining downstream worker nodes
+  hosts: downstream_remaining_workers
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: downstream_register
+
+- name: Verify the completed downstream cluster
+  hosts: downstream_first_controlplane
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for every expected downstream node to become Ready
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get nodes --no-headers
+      register: downstream_ready_nodes
+      changed_when: false
+      retries: 60
+      delay: 10
+      until:
+        - downstream_ready_nodes.stdout_lines | length == groups['downstream_nodes'] | length
+        - downstream_ready_nodes.stdout_lines | select('search', ' Ready ') | list | length == groups['downstream_nodes'] | length

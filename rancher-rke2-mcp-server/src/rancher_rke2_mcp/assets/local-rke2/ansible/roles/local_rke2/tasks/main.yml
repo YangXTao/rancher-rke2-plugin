@@ -299,6 +299,22 @@
   when: inventory_hostname == groups['management_servers'][0]
   no_log: true
 
+- name: Wait for every local server to report Ready after image pulls
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - >-
+        /var/lib/rancher/rke2/bin/kubectl get nodes
+        --kubeconfig /etc/rancher/rke2/rke2.yaml --no-headers |
+        awk 'NF >= 2 && $2 == "Ready" { count++ } END { exit !(count == 3) }'
+  register: rke2_ready_wait
+  retries: 30
+  delay: 20
+  until: rke2_ready_wait.rc == 0
+  changed_when: false
+  when: inventory_hostname == groups['management_servers'][-1]
+
 - name: Read all local server states after the final join
   ansible.builtin.command: >-
     /var/lib/rancher/rke2/bin/kubectl get nodes

@@ -15,6 +15,43 @@ from .secrets import DockerSecretResolver
 LOGGER = logging.getLogger(__name__)
 
 
+def _default_registry_mirrors(config: dict[str, Any]) -> dict[str, Any]:
+    """Reference Harbor mirror set shared by Local RKE2 and downstream defaults.
+
+    docker.io is proxied without rewrites; the Rancher domain mirror is chosen
+    by edition: enterprise images use registry.rancher.cn and standard images
+    use registry.rancher.com.
+    """
+    hostname = str(config["registry"]["hostname"])
+    rancher_domain = (
+        "registry.rancher.cn"
+        if str(config["versions"]["rancher"]).endswith("-ent")
+        else "registry.rancher.com"
+    )
+    rewrite_targets: dict[str, str | None] = {
+        "docker.io": None,
+        "dp.apps.rancher.io": "dp.apps.rancher.io",
+        "ghcr.io": None,
+        "k8s.gcr.io": "registry.k8s.io",
+        "quay.io": "quay.io",
+        "registry.k8s.io": "registry.k8s.io",
+        rancher_domain: rancher_domain,
+        "registry.suse.com": "registry.suse.com",
+    }
+    mirrors: dict[str, dict[str, Any]] = {}
+    for domain, rewrite_target in rewrite_targets.items():
+        endpoints = (
+            ["https://ghcr.zscr.io"]
+            if domain == "ghcr.io"
+            else [f"https://{hostname}"]
+        )
+        rewrites: dict[str, str] = {}
+        if rewrite_target is not None:
+            rewrites["(^.+$)"] = f"{rewrite_target}/$1"
+        mirrors[domain] = {"endpoints": endpoints, "rewrites": rewrites}
+    return mirrors
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     run_id: str
@@ -517,11 +554,7 @@ class LocalRke2Executor(VmExecutor):
         hostname = str(registry["hostname"])
         mirrors = local_registry.get("mirrors")
         if mirrors is None:
-            mirrors = {
-                "docker.io": {"endpoints": [f"https://{hostname}"], "rewrites": {"(^.+$)": "hub/$1"}},
-                "registry.rancher.cn": {"endpoints": [f"https://{hostname}"], "rewrites": {}},
-                "registry.rancher.com": {"endpoints": [f"https://{hostname}"], "rewrites": {}},
-            }
+            mirrors = _default_registry_mirrors(config)
         configs = local_registry.get("configs")
         if configs is None:
             auth_enabled = bool(registry.get("username") and registry.get("password_ref"))
@@ -705,4 +738,408 @@ class RancherExecutor(VmExecutor):
             "registry_auth_secret_enabled": registry_auth, "registry_username": str(registry.get("username") or ""),
             "registry_password": resolver.resolve(registry["password_ref"]) if registry_auth else "",
             "nginx_version": "1.27.0", "nginx_image": f"{registry.get('hostname')}/hub/nginx:1.27.0",
+        }
+
+
+class DownstreamExecutor(RancherExecutor):
+    """Create and register the Rancher-managed downstream custom RKE2 cluster.
+
+    The component receives only secret *references* from MCP and reuses the
+    validated ``rancher-rke2-downstream`` skill assets.  Node and Rancher admin
+    credentials are resolved into a mode-0600 run directory on the SSH control
+    host.  The persistent control container then prepares the exact
+    ``rancher/rancher2`` Provider, obtains a Rancher API token, applies
+    ``rancher2_cluster_v2``, and registers every custom node in the approved
+    role order.  A checkpoint is written only after every mandatory staged log
+    exists and is non-empty.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.assets_root = Path(__file__).parent / "assets" / "downstream"
+
+    def submit(
+        self,
+        *,
+        config: dict[str, Any],
+        run_id: str,
+        on_started: Callable[[str], None],
+        on_complete: Callable[[ExecutionResult], None],
+    ) -> None:
+        Thread(
+            target=self._run_and_report,
+            args=(config, run_id, on_started, on_complete),
+            daemon=True,
+            name=f"rancher-rke2-downstream-{run_id[-8:]}",
+        ).start()
+
+    def _run_and_report(
+        self,
+        config: dict[str, Any],
+        run_id: str,
+        on_started: Callable[[str], None],
+        on_complete: Callable[[ExecutionResult], None],
+    ) -> None:
+        artifact_path = (
+            f"{str(config['run']['workspace']).rstrip('/')}/runs/{run_id}/downstream"
+        )
+        try:
+            on_started(run_id)
+            self.execute(config, artifact_path)
+        except Exception:
+            LOGGER.exception("Downstream execution failed for run %s", run_id)
+            on_complete(
+                ExecutionResult(
+                    run_id,
+                    False,
+                    "DOWNSTREAM_EXECUTION_FAILED",
+                    artifact_path,
+                    (
+                        "Downstream runner failed; inspect downstream-register.log "
+                        f"and the other staged logs under {artifact_path}."
+                    ),
+                )
+            )
+            return
+        on_complete(ExecutionResult(run_id, True, "DOWNSTREAM_SUCCEEDED", artifact_path))
+
+    def execute(self, config: dict[str, Any], artifact_path: str) -> None:
+        ca_source = str(config.get("_rancher_ca_source", ""))
+        if not ca_source.startswith("/"):
+            raise ValueError(
+                "A successful Rancher private-CA certificate artifact is required before downstream"
+            )
+        self._run_downstream(config, artifact_path)
+
+    def _run_downstream(self, config: dict[str, Any], artifact_path: str) -> None:
+        import paramiko
+
+        control = config["execution"]["control_host"]
+        client = paramiko.SSHClient()
+        client.load_host_keys(str(self.known_hosts_path))
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        password = DockerSecretResolver(self.secret_root).resolve(control["password_ref"])
+        try:
+            client.connect(
+                hostname=str(control["address"]),
+                port=int(control["port"]),
+                username=str(control["username"]),
+                password=password,
+                allow_agent=False,
+                look_for_keys=False,
+                timeout=15,
+                banner_timeout=15,
+                auth_timeout=15,
+            )
+            self._upload_downstream_bundle(client, config, artifact_path)
+            container = config["execution"]["container"]
+            command = " ".join(
+                shlex.quote(value)
+                for value in (
+                    "bash",
+                    f"{artifact_path}/downstream-runner.sh",
+                    artifact_path,
+                    str(container["name"]),
+                    str(container["image"]),
+                    str(container["strategy"]),
+                    str(config["downloads"]["software_root"]),
+                    str(config["run"]["workspace"]),
+                    str(config["downloads"]["mode"]),
+                    str(config["versions"]["rancher"]),
+                    str(config["versions"]["rancher2_provider"]),
+                    self._rancher_api_url(config),
+                    config["_rancher_ca_source"],
+                    str(config["versions"]["terraform"]),
+                    str(config["downstream_cluster"]["name"]),
+                )
+            )
+            _, stdout, stderr = client.exec_command(command, timeout=7200)
+            exit_status = stdout.channel.recv_exit_status()
+            stdout.read()
+            stderr.read()
+            if exit_status != 0:
+                raise RuntimeError(
+                    f"remote downstream runner failed; inspect {artifact_path}"
+                )
+        finally:
+            client.close()
+
+    def _upload_downstream_bundle(
+        self, client: Any, config: dict[str, Any], run_dir: str
+    ) -> None:
+        sftp = client.open_sftp()
+        try:
+            self._mkdirs(sftp, run_dir)
+            for source in self.assets_root.rglob("*"):
+                if source.is_file():
+                    remote = f"{run_dir}/{source.relative_to(self.assets_root).as_posix()}"
+                    self._mkdirs(sftp, remote.rsplit("/", 1)[0])
+                    sftp.put(str(source), remote)
+                    if source.suffix in {".sh", ".py"}:
+                        sftp.chmod(remote, 0o700)
+            self._put_text(
+                sftp,
+                f"{run_dir}/.dependency.env",
+                self._dependency_env(config),
+                mode=0o600,
+            )
+            resolver = DockerSecretResolver(self.secret_root)
+            self._mkdirs(sftp, f"{run_dir}/secrets")
+            self._put_text(
+                sftp,
+                f"{run_dir}/secrets/rancher-bootstrap-password",
+                resolver.resolve(config["rancher"]["bootstrap_password_ref"]) + "\n",
+                mode=0o600,
+            )
+            self._mkdirs(sftp, f"{run_dir}/terraform")
+            self._put_text(
+                sftp,
+                f"{run_dir}/terraform/versions.tf",
+                self._downstream_versions_tf(config),
+                mode=0o600,
+            )
+            self._put_text(
+                sftp,
+                f"{run_dir}/terraform/terraform.tfvars.json",
+                self._downstream_tfvars(config),
+                mode=0o600,
+            )
+            self._mkdirs(sftp, f"{run_dir}/ansible/inventory")
+            self._mkdirs(sftp, f"{run_dir}/ansible/group_vars")
+            self._put_text(
+                sftp,
+                f"{run_dir}/ansible/inventory/hosts.yml",
+                json.dumps(
+                    self._downstream_inventory(config),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                mode=0o600,
+            )
+            self._put_text(
+                sftp,
+                f"{run_dir}/ansible/group_vars/all.yml",
+                json.dumps(
+                    self._downstream_group_vars(config, run_dir),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                mode=0o600,
+            )
+        finally:
+            sftp.close()
+
+    def _downstream_versions_tf(self, config: dict[str, Any]) -> str:
+        template = (self.assets_root / "terraform" / "versions.tf.tmpl").read_text(
+            encoding="utf-8"
+        )
+        return template.replace(
+            "__RANCHER2_PROVIDER_VERSION__",
+            str(config["versions"]["rancher2_provider"]),
+        )
+
+    def _downstream_tfvars(self, config: dict[str, Any]) -> str:
+        downstream = config["downstream_cluster"]
+        payload = {
+            "rancher_api_url": self._rancher_api_url(config),
+            "cluster_name": str(downstream["name"]),
+            "kubernetes_version": str(config["versions"]["rke2_downstream"]),
+            "rke_config": self._downstream_rke_config(config),
+            "registries": self._downstream_registries(config),
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+    def _downstream_rke_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        submitted = config.get("downstream_cluster", {}).get("rke_config")
+        if submitted:
+            return dict(submitted)
+        return self._default_downstream_rke_config()
+
+    def _downstream_registries(self, config: dict[str, Any]) -> dict[str, Any]:
+        submitted = config.get("downstream_cluster", {}).get("registries")
+        if submitted:
+            return dict(submitted)
+        return self._default_downstream_registries(config)
+
+    @staticmethod
+    def _rancher_api_url(config: dict[str, Any]) -> str:
+        lb = config["nodes"]["management"]["load_balancer"]
+        return f"https://{lb['ip']}"
+
+    @staticmethod
+    def _default_downstream_rke_config() -> dict[str, Any]:
+        """Return the reference downstream rkeConfig from the validated skill."""
+        return {
+            "chartValues": {
+                "rke2-cilium": {
+                    "hubble": {
+                        "enabled": True,
+                        "metrics": {
+                            "enableOpenMetrics": True,
+                            "enabled": [
+                                "dns:query;ignoreAAAA",
+                                "drop",
+                                "tcp",
+                                "flow",
+                                "icmp",
+                                "http",
+                                "port-distribution",
+                            ],
+                        },
+                        "relay": {"enabled": True},
+                        "ui": {"enabled": True},
+                    },
+                    "k8sServiceHost": "127.0.0.1",
+                    "k8sServicePort": "6443",
+                    "kubeProxyReplacement": True,
+                }
+            },
+            "etcd": {
+                "disableSnapshots": False,
+                "snapshotRetention": 5,
+                "snapshotScheduleCron": "0 */5 * * *",
+            },
+            "machineGlobalConfig": {
+                "cluster-cidr": "10.42.0.0/16",
+                "cluster-dns": "10.43.0.10",
+                "cni": "cilium",
+                "disable-kube-proxy": True,
+                "etcd-arg": [
+                    "--auto-compaction-mode=periodic",
+                    "--auto-compaction-retention=1h0m0s",
+                    "--quota-backend-bytes=6442450944",
+                ],
+                "kube-apiserver-arg": [
+                    "--watch-cache=true",
+                    "--default-watch-cache-size=200",
+                    "--max-requests-inflight=400",
+                    "--max-mutating-requests-inflight=200",
+                ],
+                "kube-controller-manager-arg": [
+                    "--node-monitor-grace-period=20s",
+                    "--node-startup-grace-period=30s",
+                ],
+                "service-cidr": "10.43.0.0/16",
+            },
+            "machinePools": None,
+            "machineSelectorConfig": [
+                {
+                    "config": {
+                        "kubelet-arg": [
+                            "kube-reserved=cpu=1,memory=2048Mi",
+                            "system-reserved=cpu=1,memory=2048Mi",
+                            "container-log-max-files=5",
+                            "container-log-max-size=100Mi",
+                            "cgroups-per-qos=true",
+                            "enforce-node-allocatable=pods",
+                            "eviction-hard=memory.available<256Mi,nodefs.available<10%,imagefs.available<15%,nodefs.inodesFree<5%",
+                            "eviction-soft=memory.available<512Mi,nodefs.available<15%,imagefs.available<20%,nodefs.inodesFree<10%",
+                            "eviction-soft-grace-period=memory.available=1m30s,nodefs.available=1m30s,imagefs.available=1m30s,nodefs.inodesFree=1m30s",
+                            "eviction-max-pod-grace-period=30",
+                            "eviction-pressure-transition-period=30s",
+                            "max-open-files=1000000",
+                            "registry-burst=10",
+                            "registry-qps=0",
+                            "serialize-image-pulls=false",
+                            "sync-frequency=30s",
+                            "max-pods=999",
+                        ],
+                        "protect-kernel-defaults": False,
+                    }
+                }
+            ],
+        }
+
+    @staticmethod
+    def _default_downstream_registries(config: dict[str, Any]) -> dict[str, Any]:
+        """Return the reference Harbor mirror registries from the validated skill."""
+        hostname = str(config["registry"]["hostname"])
+        mirrors = [
+            {
+                "hostname": domain,
+                "endpoints": list(entry["endpoints"]),
+                "rewrites": dict(entry["rewrites"]),
+            }
+            for domain, entry in _default_registry_mirrors(config).items()
+        ]
+        return {
+            "enabled": True,
+            "systemDefaultRegistry": "",
+            "configs": [
+                {
+                    "hostname": hostname,
+                    "authConfigSecretName": "myharbor-auth",
+                    "tlsSecretName": "",
+                    "caBundle": "",
+                    "insecure": bool(
+                        config["registry"].get("insecure_skip_verify", False)
+                    ),
+                }
+            ],
+            "mirrors": mirrors,
+        }
+
+    def _downstream_inventory(self, config: dict[str, Any]) -> dict[str, Any]:
+        resolver = DockerSecretResolver(self.secret_root)
+        controlplane = config["nodes"]["downstream"]["controlplane"]
+        workers = config["nodes"]["downstream"]["workers"]
+        all_hosts: dict[str, dict[str, Any]] = {}
+        for node in controlplane:
+            all_hosts[str(node["hostname"])] = {
+                "ansible_host": str(node["ip"]),
+                "rancher_node_roles": ["etcd", "controlplane"],
+            }
+        for node in workers:
+            all_hosts[str(node["hostname"])] = {
+                "ansible_host": str(node["ip"]),
+                "rancher_node_roles": ["worker"],
+            }
+        return {
+            "all": {
+                "vars": {
+                    "ansible_connection": "paramiko",
+                    "ansible_user": str(config["node_access"]["username"]),
+                    "ansible_password": resolver.resolve(
+                        config["node_access"]["password_ref"]
+                    ),
+                    "ansible_become_password": resolver.resolve(
+                        config["node_access"]["password_ref"]
+                    ),
+                },
+                "children": {
+                    "downstream_first_controlplane": {
+                        "hosts": {str(controlplane[0]["hostname"]): {}}
+                    },
+                    "downstream_first_worker": {
+                        "hosts": {str(workers[0]["hostname"]): {}}
+                    },
+                    "downstream_remaining_controlplanes": {
+                        "hosts": {
+                            str(node["hostname"]): {} for node in controlplane[1:]
+                        }
+                    },
+                    "downstream_remaining_workers": {
+                        "hosts": {
+                            str(node["hostname"]): {} for node in workers[1:]
+                        }
+                    },
+                    "downstream_nodes": {"hosts": all_hosts},
+                },
+            }
+        }
+
+    def _downstream_group_vars(
+        self, config: dict[str, Any], run_dir: str
+    ) -> dict[str, Any]:
+        return {
+            "automation_run_id": run_dir.rstrip("/")
+            .rsplit("/runs/", 1)[-1]
+            .rsplit("/", 1)[0],
+            "downstream_registration_command_file": (
+                f"{run_dir}/secrets/downstream-registration-command"
+            ),
+            "downstream_minimum_kernel": "5.8",
+            "downstream_registration_require_insecure_curl": True,
         }
