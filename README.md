@@ -7,8 +7,9 @@ Rancher/RKE2 planning, preflight, and approval-gated run-state service and its C
 
 - `rancher-rke2-mcp-server/`: remote Docker-deployed MCP Server. It validates
   reference-only configuration and creates non-executable plans.
-- `rancher-rke2-codex/`: Codex Plugin with orchestration skills, MCP contract,
-  and client-side plaintext-credential blocking hooks.
+- `.agents/plugins/plugins/rancher-rke2-codex/`: Codex Plugin with orchestration
+  skills, MCP contract, and client-side plaintext-credential blocking hooks,
+  published through the repository marketplace (`.agents/plugins/marketplace.json`).
 
 ## Security boundary
 

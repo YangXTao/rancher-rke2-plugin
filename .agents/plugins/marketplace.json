@@ -1,0 +1,20 @@
+{
+  "name": "rancher-rke2",
+  "interface": {
+    "displayName": "Rancher RKE2"
+  },
+  "plugins": [
+    {
+      "name": "rancher-rke2-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/rancher-rke2-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
