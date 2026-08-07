@@ -1,0 +1,362 @@
+---
+- name: Validate Stage 40 Rancher inputs
+  ansible.builtin.assert:
+    that:
+      - rancher_publish_mode == 'nodeport-l7'
+      - rancher_chart_edition in ['standard', 'enterprise']
+      - rancher_download_mode in ['online', 'offline']
+      - rancher_version | length > 0
+      - rancher_hostname | length > 0
+      - rancher_http_nodeport | int == 30080
+      - rancher_helm_tls == 'external'
+      - rancher_helm_service_type == ('NodePort' if rancher_chart_edition == 'enterprise' else 'ClusterIP')
+      - rancher_access_mode in ['fqdn', 'ip-compatibility']
+      - rancher_certificate.source in ['existing', 'generate']
+      - rancher_certificate.cert_file | length > 0
+      - rancher_certificate.key_file | length > 0
+
+- name: Prepare Enterprise Rancher console artifacts under software root
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ rancher_enterprise_artifact_preparer }}"
+      - "{{ rancher_download_mode }}"
+      - "{{ rancher_version }}"
+      - "{{ rancher_rke2_version }}"
+      - "{{ rancher_helm_version }}"
+      - "{{ rancher_cfssl_version }}"
+      - "{{ rancher_docker_version }}"
+      - "{{ rancher_software_root }}"
+      - "{{ rancher_chart_enterprise_base_url }}"
+      - "{{ rancher_enterprise_image_archive_name }}"
+  environment:
+    DOWNLOAD_PROXY_URL: "{{ lookup('ansible.builtin.env', 'DOWNLOAD_PROXY_URL') }}"
+    RANCHER_IMAGE_ARCHIVE_URL: "{{ rancher_enterprise_image_archive_url }}"
+  when: rancher_chart_edition == 'enterprise'
+  changed_when: false
+
+- name: Require the SSH control host inventory entry for Enterprise image upload
+  ansible.builtin.assert:
+    that:
+      - groups['control_host'] | default([]) | length == 1
+      - registry_username | length > 0
+      - registry_password | length > 0
+    fail_msg: >-
+      Enterprise image upload requires exactly one control_host plus a
+      non-empty registry username and password.
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_enterprise_image_archive_name | length > 0
+  no_log: true
+
+- name: Upload the Enterprise image archive through a temporary control-host container
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ rancher_enterprise_image_uploader }}"
+      - "{{ rancher_software_root }}/rancher/{{ rancher_enterprise_image_archive_name }}"
+      - "{{ registry_hostname }}"
+      - "{{ rancher_enterprise_registry_job_image }}"
+      - "{{ rancher_enterprise_image_upload_jobs | string }}"
+      - "false"
+  environment:
+    REGISTRY_USERNAME: "{{ registry_username }}"
+    REGISTRY_PASSWORD: "{{ registry_password }}"
+  delegate_to: "{{ groups['control_host'][0] }}"
+  become: true
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_enterprise_image_archive_name | length > 0
+  changed_when: false
+  no_log: true
+
+- name: Prepare the exact Rancher chart and checksum manifest
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ rancher_chart_preparer }}"
+      - "{{ rancher_download_mode }}"
+      - "{{ rancher_chart_edition }}"
+      - "{{ rancher_version }}"
+      - "{{ rancher_chart_path | dirname }}"
+      - "{{ rancher_chart_repository_name }}"
+      - "{{ rancher_chart_repository_url }}"
+      - "{{ rancher_chart_enterprise_base_url }}"
+      - "{{ rancher_chart_offline_file }}"
+  environment:
+    DOWNLOAD_PROXY_URL: "{{ lookup('ansible.builtin.env', 'DOWNLOAD_PROXY_URL') }}"
+  register: rancher_chart_prepare
+  changed_when: false
+  no_log: true
+
+- name: Verify Rancher chart checksum checkpoint
+  ansible.builtin.shell: >-
+    test "$(sha256sum {{ rancher_chart_path | quote }} | awk '{print $1}')"
+    = "$(awk '$1 == "sha256:" {print $2; exit}' {{ rancher_chart_manifest_path | quote }})"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Verify Rancher chart metadata version
+  ansible.builtin.shell: >-
+    test "$(helm show chart {{ rancher_chart_path | quote }} | awk '$1 == "version:" {print $2; exit}')"
+    = {{ rancher_version | quote }}
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Generate approved Rancher private-CA certificates when selected
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ rancher_enterprise_certificate_generator if rancher_chart_edition == 'enterprise' else rancher_certificate_generator }}"
+      - "{{ rancher_certificate.cert_file | dirname }}"
+      - "{{ rancher_hostname }}"
+      - "{{ rancher_lb_ip }}"
+      - "{{ rancher_certificate.validity_days | default(3650) | string }}"
+  args:
+    creates: "{{ rancher_certificate.cert_file }}"
+  when: rancher_certificate.source == 'generate'
+  no_log: true
+
+- name: Check Rancher certificate and bootstrap files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: >-
+    {{
+      [rancher_certificate.cert_file, rancher_certificate.key_file, rancher_bootstrap_password_file]
+      + ([rancher_certificate.ca_file] if rancher_private_ca else [])
+      + ([rancher_additional_trusted_ca_file] if
+          ((rancher_chart_edition == 'enterprise' and rancher_enterprise_profile.additional_trusted_cas | bool)
+           or (rancher_chart_edition == 'standard' and rancher_standard_profile.additional_trusted_cas | bool))
+         else [])
+    }}
+  register: rancher_secret_files
+  no_log: true
+
+- name: Require protected Rancher input files
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: A required Rancher certificate or secret input file is missing
+  loop: "{{ rancher_secret_files.results }}"
+  no_log: true
+
+- name: Validate Rancher certificate access identity
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ rancher_certificate.cert_file }}"
+      - -noout
+      - "{{ '-checkip' if rancher_access_mode == 'ip-compatibility' else '-checkhost' }}"
+      - "{{ rancher_hostname }}"
+  changed_when: false
+
+- name: Validate Rancher certificate is not near expiry
+  ansible.builtin.command:
+    argv: [openssl, x509, -in, "{{ rancher_certificate.cert_file }}", -noout, -checkend, "86400"]
+  changed_when: false
+
+- name: Validate Rancher private CA chain
+  ansible.builtin.command:
+    argv: [openssl, verify, -CAfile, "{{ rancher_certificate.ca_file }}", "{{ rancher_certificate.cert_file }}"]
+  when: rancher_private_ca
+  changed_when: false
+
+- name: Validate Rancher certificate and key match
+  ansible.builtin.shell: >-
+    test
+    "$(openssl x509 -in {{ rancher_certificate.cert_file | quote }} -pubkey -noout | openssl sha256)"
+    =
+    "$(openssl pkey -in {{ rancher_certificate.key_file | quote }} -pubout | openssl sha256)"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  no_log: true
+
+- name: Create rendered Rancher directory
+  ansible.builtin.file:
+    path: "{{ rancher_rendered_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Render edition-specific Rancher Helm values
+  ansible.builtin.template:
+    src: "values-{{ rancher_chart_edition }}.yaml.j2"
+    dest: "{{ rancher_rendered_dir }}/values-base.yaml"
+    mode: '0600'
+
+- name: Render user Rancher Helm overrides
+  ansible.builtin.template:
+    src: values-overrides.yaml.j2
+    dest: "{{ rancher_rendered_dir }}/values-overrides.yaml"
+    mode: '0600'
+
+- name: Render the fixed Rancher NodePort service
+  ansible.builtin.template:
+    src: rancher-nodeport.yaml.j2
+    dest: "{{ rancher_rendered_dir }}/rancher-nodeport.yaml"
+    mode: '0600'
+  when: rancher_chart_edition == 'standard'
+
+- name: Ensure Rancher namespace exists
+  ansible.builtin.shell: >-
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }}
+    create namespace {{ rancher_helm_namespace | quote }} --dry-run=client -o yaml |
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }} apply -f -
+  args:
+    executable: /bin/bash
+  register: rancher_namespace_apply
+  changed_when: "'created' in rancher_namespace_apply.stdout or 'configured' in rancher_namespace_apply.stdout"
+
+- name: Apply the Rancher private CA secret
+  ansible.builtin.shell: >-
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }} -n {{ rancher_helm_namespace | quote }}
+    create secret generic tls-ca
+    --from-file=cacerts.pem={{ rancher_certificate.ca_file | quote }}
+    --dry-run=client -o yaml |
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }} apply -f -
+  args:
+    executable: /bin/bash
+  when: rancher_private_ca
+  no_log: true
+
+- name: Apply the additional trusted CA secret
+  ansible.builtin.shell: >-
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }} -n {{ rancher_helm_namespace | quote }}
+    create secret generic tls-ca-additional
+    --from-file=ca-additional.pem={{ rancher_additional_trusted_ca_file | quote }}
+    --dry-run=client -o yaml |
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }} apply -f -
+  args:
+    executable: /bin/bash
+  when: >-
+    (rancher_chart_edition == 'enterprise' and rancher_enterprise_profile.additional_trusted_cas | bool)
+    or (rancher_chart_edition == 'standard' and rancher_standard_profile.additional_trusted_cas | bool)
+  no_log: true
+
+- name: Ensure the downstream registry-auth namespace exists
+  ansible.builtin.shell: >-
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }}
+    create namespace {{ registry_auth_secret_namespace | quote }} --dry-run=client -o yaml |
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }} apply -f -
+  args:
+    executable: /bin/bash
+  when: registry_auth_secret_enabled
+  changed_when: false
+
+- name: Apply the downstream Harbor basic-auth secret
+  ansible.builtin.shell: >-
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }}
+    -n {{ registry_auth_secret_namespace | quote }} create secret generic
+    {{ registry_auth_secret_name | quote }}
+    --type=kubernetes.io/basic-auth
+    --from-literal=username={{ registry_username | quote }}
+    --from-literal=password={{ registry_password | quote }}
+    --dry-run=client -o yaml |
+    kubectl --kubeconfig {{ rancher_kubeconfig | quote }} apply -f -
+  args:
+    executable: /bin/bash
+  when: registry_auth_secret_enabled
+  no_log: true
+
+- name: Select the configured Rancher Helm install command
+  ansible.builtin.set_fact:
+    rancher_selected_helm_command: "{{ rancher_helm_install_commands[rancher_chart_edition] }}"
+
+- name: Inspect the legacy Enterprise Rancher NodePort Service before Helm reconciliation
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", get, service, rancher-nodeport, -o, json]
+  register: rancher_legacy_nodeport
+  changed_when: false
+  failed_when: rancher_legacy_nodeport.rc not in [0, 1]
+  when: rancher_chart_edition == 'enterprise'
+
+- name: Require that the legacy Enterprise NodePort Service belongs to this Helm release
+  ansible.builtin.assert:
+    that:
+      - ((rancher_legacy_nodeport.stdout | from_json).metadata.labels['app.kubernetes.io/managed-by'] | default('')) == 'Helm'
+      - ((rancher_legacy_nodeport.stdout | from_json).metadata.labels.release | default('')) == rancher_helm_release_name
+    fail_msg: Refusing to alter a pre-existing rancher-nodeport Service not owned by the Rancher Helm release.
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+
+- name: Remove only the legacy client-side apply annotation before Enterprise Helm reconciliation
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", annotate, service, rancher-nodeport, kubectl.kubernetes.io/last-applied-configuration-]
+  register: rancher_legacy_nodeport_annotation
+  changed_when: "'annotated' in rancher_legacy_nodeport_annotation.stdout"
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+    - "'kubectl.kubernetes.io/last-applied-configuration' in ((rancher_legacy_nodeport.stdout | from_json).metadata.annotations | default({}))"
+
+- name: Render the exact Enterprise Helm ownership migration patch
+  ansible.builtin.template:
+    src: rancher-nodeport-helm-ownership.yaml.j2
+    dest: "{{ rancher_rendered_dir }}/rancher-nodeport-helm-ownership.yaml"
+    mode: '0600'
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+
+- name: Transfer only the conflicting Enterprise NodePort port-name field to Helm
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", apply, --server-side, --field-manager=helm, --force-conflicts, -f, "{{ rancher_rendered_dir }}/rancher-nodeport-helm-ownership.yaml"]
+  register: rancher_nodeport_helm_ownership
+  changed_when: "'configured' in rancher_nodeport_helm_ownership.stdout"
+  when:
+    - rancher_chart_edition == 'enterprise'
+    - rancher_legacy_nodeport.rc == 0
+
+- name: Install or upgrade Rancher with the exact configured Helm command
+  ansible.builtin.shell: "{{ rancher_selected_helm_command }}"
+  args:
+    executable: /bin/bash
+  environment:
+    RANCHER_CHART: "{{ rancher_chart_path }}"
+    RANCHER_KUBECONFIG: "{{ rancher_kubeconfig }}"
+    RANCHER_HOSTNAME: "{{ rancher_hostname }}"
+    RANCHER_BOOTSTRAP_PASSWORD: "{{ lookup('ansible.builtin.file', rancher_bootstrap_password_file) | trim }}"
+    RANCHER_HTTP_NODEPORT: "{{ rancher_http_nodeport }}"
+    # Keep the upstream registry name in the image reference.  RKE2/containerd
+    # applies registries.yaml mirrors and rewrites itself; prepending Harbor here
+    # would yield paths such as <harbor>/registry.rancher.cn/prime/rancher.
+    RANCHER_IMAGE: "{{ rancher_enterprise_profile.rancher_image_path if rancher_chart_edition == 'enterprise' else rancher_standard_profile.rancher_image_path }}"
+    POST_DELETE_IMAGE: "{{ rancher_enterprise_profile.post_delete_image_path }}"
+  no_log: true
+
+- name: Apply the fixed Rancher NodePort service
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", apply, -f, "{{ rancher_rendered_dir }}/rancher-nodeport.yaml"]
+  register: rancher_nodeport_apply
+  changed_when: "'created' in rancher_nodeport_apply.stdout or 'configured' in rancher_nodeport_apply.stdout"
+  when: rancher_chart_edition == 'standard'
+
+- name: Verify Rancher deployment readiness
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", rollout, status, deployment/rancher, --timeout=15m]
+  changed_when: false
+
+- name: Read the Rancher NodePort
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ rancher_kubeconfig }}", -n, "{{ rancher_helm_namespace }}", get, service, "{{ rancher_nodeport_service_name }}", -o, "jsonpath={.spec.ports[0].nodePort}"]
+  register: rancher_nodeport_read
+  changed_when: false
+
+- name: Require Rancher NodePort 30080
+  ansible.builtin.assert:
+    that: rancher_nodeport_read.stdout | int == 30080
+
+- name: Verify Rancher HTTP ping on every management server
+  ansible.builtin.uri:
+    url: "http://{{ item }}:{{ rancher_http_nodeport }}/ping"
+    return_content: true
+    status_code: 200
+  loop: "{{ management_server_ips }}"
+  register: rancher_internal_ping
+  retries: 30
+  delay: 10
+  until: rancher_internal_ping.content | trim == 'pong'

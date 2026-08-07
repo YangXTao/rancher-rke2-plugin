@@ -116,12 +116,26 @@ def validate(config: str | dict[str, Any]) -> ValidationOutcome:
 def config_schema() -> dict[str, Any]:
     schema = AutomationConfig.model_json_schema()
     schema["$id"] = f"urn:rancher-rke2:config-schema:{SCHEMA_VERSION}"
-    schema["x-read-only-planning"] = True
+    schema["x-read-only-planning"] = False
+    schema["x-vm-execution"] = {
+        "available": True,
+        "scope": ["vm"],
+        "requires": [
+            "current_passed_preflight",
+            "exact_plan_approval",
+            "idempotency_key",
+            "control_host_known_hosts",
+        ],
+    }
     schema["x-plaintext-credentials-compatible"] = False
     schema["x-secret-reference-schemes"] = ["docker-secret"]
     schema["x-non-mutating-preflight"] = {
         "available": True,
         "checks": ["mounted_secret_availability", "tcp_reachability"],
+        "node_ssh_policy": (
+            "Node SSH checks are skipped when the plan includes the VM component; "
+            "they are checked only for plans that do not create VMs."
+        ),
         "does_not_perform": ["authentication", "remote_command_execution"],
     }
     return schema

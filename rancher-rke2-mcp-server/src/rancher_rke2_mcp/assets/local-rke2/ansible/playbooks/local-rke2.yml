@@ -1,0 +1,10 @@
+---
+- name: Build the three-server local RKE2 cluster through the first server
+  hosts: management_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - role: local_rke2

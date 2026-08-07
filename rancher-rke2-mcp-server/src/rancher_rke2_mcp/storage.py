@@ -45,6 +45,28 @@ class SQLiteStore:
                     expires_at TEXT NOT NULL,
                     FOREIGN KEY(plan_id) REFERENCES plans(plan_id)
                 );
+                CREATE TABLE IF NOT EXISTS runs (
+                    run_id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    config_digest TEXT NOT NULL,
+                    run_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(plan_id) REFERENCES plans(plan_id)
+                );
+                CREATE TABLE IF NOT EXISTS idempotency_keys (
+                    idempotency_key TEXT PRIMARY KEY,
+                    request_fingerprint TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
+                CREATE TABLE IF NOT EXISTS run_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    event_json TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
                 """
             )
             connection.commit()
@@ -141,3 +163,134 @@ class SQLiteStore:
                 (preflight_id,),
             ).fetchone()
         return json.loads(row["preflight_json"]) if row else None
+
+    def save_run(self, run: dict[str, Any]) -> None:
+        payload = json.dumps(run, ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO runs(run_id, plan_id, config_digest, run_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run["run_id"],
+                    run["plan_id"],
+                    run["config_digest"],
+                    payload,
+                    run["created_at"],
+                    run["updated_at"],
+                ),
+            )
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT run_json FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return json.loads(row["run_json"]) if row else None
+
+    def latest_succeeded_component_run(
+        self, config_digest: str, component: str
+    ) -> dict[str, Any] | None:
+        """Return the newest successful run containing the component.
+
+        A component can succeed either as a standalone single-component run or
+        as one stage of a succeeded workflow, so the lookup matches both the
+        run state and the persisted component state.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT run_json FROM runs
+                WHERE config_digest = ?
+                ORDER BY created_at DESC
+                """,
+                (config_digest,),
+            ).fetchall()
+        for row in rows:
+            run = json.loads(row["run_json"])
+            if run.get("state") != "SUCCEEDED":
+                continue
+            if component not in run.get("target_components", []):
+                continue
+            states = {
+                item.get("component"): item.get("state")
+                for item in run.get("component_states", [])
+            }
+            if states.get(component) == "SUCCEEDED":
+                return run
+        return None
+
+    def update_run(self, run: dict[str, Any]) -> None:
+        payload = json.dumps(run, ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE runs
+                SET run_json = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (payload, run["updated_at"], run["run_id"]),
+            )
+
+    def save_idempotency_key(
+        self, idempotency_key: str, request_fingerprint: str, run_id: str
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO idempotency_keys(idempotency_key, request_fingerprint, run_id)
+                VALUES (?, ?, ?)
+                """,
+                (idempotency_key, request_fingerprint, run_id),
+            )
+
+    def get_idempotency_key(self, idempotency_key: str) -> dict[str, str] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT request_fingerprint, run_id
+                FROM idempotency_keys
+                WHERE idempotency_key = ?
+                """,
+                (idempotency_key,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def append_run_event(
+        self, run_id: str, created_at: str, event: dict[str, Any]
+    ) -> str:
+        payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO run_events(run_id, created_at, event_json)
+                VALUES (?, ?, ?)
+                """,
+                (run_id, created_at, payload),
+            )
+        return str(cursor.lastrowid)
+
+    def get_run_events(
+        self, run_id: str, after_cursor: str | None, limit: int
+    ) -> list[dict[str, Any]]:
+        after = int(after_cursor or "0")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, created_at, event_json
+                FROM run_events
+                WHERE run_id = ? AND event_id > ?
+                ORDER BY event_id ASC
+                LIMIT ?
+                """,
+                (run_id, after, limit),
+            ).fetchall()
+        return [
+            {
+                "cursor": str(row["event_id"]),
+                "created_at": row["created_at"],
+                **json.loads(row["event_json"]),
+            }
+            for row in rows
+        ]

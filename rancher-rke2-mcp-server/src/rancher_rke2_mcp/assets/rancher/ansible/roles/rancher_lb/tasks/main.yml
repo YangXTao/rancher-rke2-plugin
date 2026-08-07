@@ -1,0 +1,166 @@
+---
+- name: Validate Rancher-only load-balancer inputs
+  ansible.builtin.assert:
+    that:
+      - rancher_publish_mode == 'nodeport-l7'
+      - rancher_http_nodeport | int == 30080
+      - management_server_ips | length == 3
+      - lb_runtime in ['docker', 'podman']
+      - nginx_version | length > 0
+      - not registry_enabled | bool or registry_hostname | length > 0
+
+- name: Inspect selected container runtime
+  ansible.builtin.command:
+    argv: ["{{ lb_runtime }}", version]
+  register: rancher_lb_runtime_check
+  changed_when: false
+  failed_when: false
+
+- name: Create RancherLB software directory for Docker
+  ansible.builtin.file:
+    path: "{{ lb_runtime_archive_remote | dirname }}"
+    state: directory
+    mode: '0755'
+  when: rancher_lb_runtime_check.rc != 0 and lb_runtime == 'docker'
+
+- name: Copy the console Docker archive to RancherLB
+  ansible.builtin.copy:
+    src: "{{ lb_runtime_archive_source }}"
+    dest: "{{ lb_runtime_archive_remote }}"
+    mode: '0644'
+  when: rancher_lb_runtime_check.rc != 0 and lb_runtime == 'docker'
+
+- name: Copy the static runtime installer to RancherLB
+  ansible.builtin.copy:
+    src: "{{ lb_runtime_installer }}"
+    dest: /software/docker/install-lb-runtime.sh
+    mode: '0755'
+  when: rancher_lb_runtime_check.rc != 0 and lb_runtime == 'docker'
+
+- name: Install Docker from the prepared console archive
+  ansible.builtin.command:
+    argv: [bash, /software/docker/install-lb-runtime.sh, docker, "{{ lb_runtime_archive_remote }}"]
+  when: rancher_lb_runtime_check.rc != 0 and lb_runtime == 'docker'
+  changed_when: true
+
+- name: Create the Docker configuration directory
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    mode: '0755'
+  when: lb_runtime == 'docker'
+
+- name: Render the approved RancherLB Docker daemon configuration
+  ansible.builtin.template:
+    src: docker-daemon.json.j2
+    dest: /etc/docker/daemon.json
+    mode: '0644'
+  register: rancher_lb_docker_daemon_config
+  when: lb_runtime == 'docker'
+
+- name: Validate the RancherLB Docker daemon JSON
+  ansible.builtin.command:
+    argv: [python3, -m, json.tool, /etc/docker/daemon.json]
+  changed_when: false
+  when: lb_runtime == 'docker'
+
+- name: Restart Docker after applying the approved daemon configuration
+  ansible.builtin.systemd:
+    name: docker.service
+    state: restarted
+    daemon_reload: true
+  when:
+    - lb_runtime == 'docker'
+    - rancher_lb_docker_daemon_config.changed
+
+- name: Require a preinstalled non-Docker runtime
+  ansible.builtin.assert:
+    that: rancher_lb_runtime_check.rc == 0
+    fail_msg: "{{ lb_runtime }} must already exist; automatic archive installation is implemented for Docker."
+  when: lb_runtime != 'docker'
+
+- name: Verify selected container runtime after preparation
+  ansible.builtin.command:
+    argv: ["{{ lb_runtime }}", version]
+  changed_when: false
+
+- name: Read the effective Docker daemon configuration
+  ansible.builtin.command:
+    argv: [docker, info]
+  register: rancher_lb_docker_info
+  changed_when: false
+  when: lb_runtime == 'docker'
+
+- name: Require the approved insecure-registry setting when configured
+  ansible.builtin.assert:
+    that: "'0.0.0.0/0' in rancher_lb_docker_info.stdout"
+  when:
+    - lb_runtime == 'docker'
+    - registry_insecure_skip_verify | bool
+
+- name: Create Rancher L7 configuration directory
+  ansible.builtin.file:
+    path: "{{ rancher_lb_config_dir }}"
+    state: directory
+    mode: '0750'
+
+- name: Copy TLS certificate to RancherLB
+  ansible.builtin.copy:
+    src: "{{ rancher_certificate.cert_file }}"
+    dest: "{{ rancher_lb_config_dir }}/tls.crt"
+    mode: '0644'
+  register: rancher_lb_certificate
+
+- name: Copy TLS private key to RancherLB
+  ansible.builtin.copy:
+    src: "{{ rancher_certificate.key_file }}"
+    dest: "{{ rancher_lb_config_dir }}/tls.key"
+    mode: '0600'
+  register: rancher_lb_private_key
+  no_log: true
+
+- name: Render Rancher-only Nginx configuration
+  ansible.builtin.template:
+    src: nginx-nodeport-l7.conf.j2
+    dest: "{{ rancher_lb_config_dir }}/nginx.conf"
+    mode: '0640'
+  register: rancher_lb_config
+
+- name: Validate Rancher-only Nginx configuration
+  ansible.builtin.command:
+    argv: ["{{ lb_runtime }}", run, --rm, -v, "{{ rancher_lb_config_dir }}:/etc/nginx:ro", "{{ nginx_image }}", nginx, -t]
+  changed_when: false
+
+- name: Inspect Rancher L7 container
+  ansible.builtin.command:
+    argv: ["{{ lb_runtime }}", inspect, "{{ rancher_lb_container_name }}"]
+  register: rancher_lb_inspect
+  changed_when: false
+  failed_when: false
+
+- name: Start Rancher-only L7 container
+  ansible.builtin.command:
+    argv:
+      - "{{ lb_runtime }}"
+      - run
+      - -d
+      - --name
+      - "{{ rancher_lb_container_name }}"
+      - --restart=always
+      - -p
+      - 80:80
+      - -p
+      - 443:443
+      - -v
+      - "{{ rancher_lb_config_dir }}:/etc/nginx:ro"
+      - "{{ nginx_image }}"
+  when: rancher_lb_inspect.rc != 0
+  changed_when: true
+
+- name: Restart Rancher L7 container after an approved configuration change
+  ansible.builtin.command:
+    argv: ["{{ lb_runtime }}", restart, "{{ rancher_lb_container_name }}"]
+  when:
+    - rancher_lb_inspect.rc == 0
+    - rancher_lb_config.changed or rancher_lb_certificate.changed or rancher_lb_private_key.changed
+  changed_when: true

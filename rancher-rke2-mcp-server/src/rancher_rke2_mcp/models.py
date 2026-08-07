@@ -151,8 +151,8 @@ class RegistryConfig(ExtensibleModel):
 
 
 class VersionsConfig(ExtensibleModel):
-    terraform: str = Field(min_length=1)
-    vsphere_provider: str = Field(min_length=1)
+    terraform: str = Field(min_length=1, pattern=r"^[0-9][0-9A-Za-z._+-]*$")
+    vsphere_provider: str = Field(min_length=1, pattern=r"^[0-9][0-9A-Za-z._+~<>= -]*$")
     rke2_management: str = Field(min_length=1)
     rancher: str = Field(min_length=1)
     rancher2_provider: str = Field(min_length=1)
@@ -181,6 +181,20 @@ class RegistrationConfig(ExtensibleModel):
 class DownstreamClusterConfig(ExtensibleModel):
     name: str = Field(min_length=1)
     registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
+    rke_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Complete downstream Rancher rkeConfig set the user customizes; "
+            "when omitted the validated reference defaults are used."
+        ),
+    )
+    registries: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Downstream Rancher2 registries object; when omitted the validated "
+            "reference Harbor mirror defaults are used."
+        ),
+    )
 
 
 class AutomationConfig(ExtensibleModel):

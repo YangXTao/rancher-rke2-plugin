@@ -4,8 +4,10 @@ import asyncio
 import ast
 import json
 from pathlib import Path
+import re
 import socket
 import sqlite3
+import time
 from unittest.mock import patch
 
 import httpx2
@@ -13,7 +15,13 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
-from rancher_rke2_mcp.constants import READ_ONLY_TOOLS
+from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
+from rancher_rke2_mcp.executor import (
+    DownstreamExecutor,
+    ExecutionResult,
+    LocalRke2Executor,
+    VmExecutor,
+)
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
@@ -27,12 +35,74 @@ EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
 
 
 def make_service(
-    tmp_path: Path, *, secret_root: Path | None = None
+    tmp_path: Path, *, secret_root: Path | None = None, executor=None, node_executor=None,
+    local_executor=None, rancher_executor=None, downstream_executor=None,
 ) -> ReadOnlyPlanningService:
     return ReadOnlyPlanningService(
         SQLiteStore(tmp_path / "state.db"),
         secret_root=str(secret_root or tmp_path / "secrets"),
+        executor=executor,
+        node_executor=node_executor,
+        local_executor=local_executor,
+        rancher_executor=rancher_executor,
+        downstream_executor=downstream_executor,
     )
+
+
+class QueuedExecutor:
+    def ready(self) -> bool:
+        return True
+
+    def submit(self, **_: object) -> None:
+        return None
+
+
+class SuccessfulExecutor(QueuedExecutor):
+    def submit(self, **kwargs: object) -> None:
+        callback = kwargs["on_complete"]
+        run_id = kwargs["run_id"]
+        assert callable(callback)
+        callback(ExecutionResult(run_id, True, "VM_EXECUTION_SUCCEEDED", "/data/rancher/automation/runs/test/vm"))
+
+
+class RunningExecutor(QueuedExecutor):
+    def submit(self, **kwargs: object) -> None:
+        callback = kwargs["on_started"]
+        run_id = kwargs["run_id"]
+        assert callable(callback)
+        callback(run_id)
+
+
+class WorkflowExecutor(QueuedExecutor):
+    def __init__(self) -> None:
+        self.artifact_paths: list[str] = []
+
+    def execute(self, _config: object, artifact_path: str) -> None:
+        self.artifact_paths.append(artifact_path)
+
+
+class RancherWorkflowExecutor(QueuedExecutor):
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, str]] = []
+
+    def execute(self, config: object, artifact_path: str) -> None:
+        self.calls.append((config, artifact_path))
+
+
+class DownstreamWorkflowExecutor(QueuedExecutor):
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, str]] = []
+
+    def execute(self, config: object, artifact_path: str) -> None:
+        self.calls.append((config, artifact_path))
+
+
+class CapturingExecutor(QueuedExecutor):
+    def __init__(self) -> None:
+        self.submitted: dict[str, object] = {}
+
+    def submit(self, **kwargs: object) -> None:
+        self.submitted = kwargs
 
 
 def write_required_secrets(secret_root: Path) -> None:
@@ -44,6 +114,10 @@ def write_required_secrets(secret_root: Path) -> None:
         "rancher_bootstrap_password",
     ):
         (secret_root / name).write_text(f"{name}-value\n", encoding="utf-8")
+    (secret_root / "control_host_known_hosts").write_text(
+        "control.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestOnly\n",
+        encoding="utf-8",
+    )
 
 
 def test_validates_yaml_with_secret_references(tmp_path: Path) -> None:
@@ -97,7 +171,7 @@ def test_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
     assert "duplicate key" in result["errors"][0]["message"]
 
 
-def test_builds_non_executable_plan_without_secrets(tmp_path: Path) -> None:
+def test_builds_full_pipeline_plan_without_secrets(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     validation = service.validate_config(EXAMPLE)
     digest = validation["data"]["config_digest"]
@@ -105,7 +179,9 @@ def test_builds_non_executable_plan_without_secrets(tmp_path: Path) -> None:
     assert result["ok"] is True
     plan = result["data"]["plan"]
     assert plan["read_only"] is True
-    assert plan["executable"] is False
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    assert plan["approval_text"].startswith("APPROVE WORKFLOW")
     assert [item["component"] for item in plan["component_plans"]] == [
         "vm",
         "node-init",
@@ -151,17 +227,32 @@ def test_legacy_sqlite_row_with_plaintext_secret_is_not_returned(
     assert store.get_config("sha256:legacy") is None
 
 
-def test_mcp_client_discovers_exactly_seven_non_mutating_tools(tmp_path: Path) -> None:
+def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) -> None:
     async def scenario() -> None:
         server = create_server(tmp_path / "state.db")
         async with Client(server) as client:
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
-            assert set(names) == set(READ_ONLY_TOOLS)
-            assert len(names) == 7
+            assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
+            assert len(names) == 12
+            by_name = {tool.name: tool for tool in response.tools}
+            for name in READ_ONLY_TOOLS:
+                annotations = by_name[name].annotations
+                assert annotations is not None
+                assert annotations.read_only_hint is True
+                assert annotations.destructive_hint is False
+                assert annotations.idempotent_hint is True
+            for name in MUTATION_TOOLS:
+                annotations = by_name[name].annotations
+                assert annotations is not None
+                assert annotations.read_only_hint is False
+                assert annotations.destructive_hint is True
+                assert annotations.idempotent_hint is True
             capability = await client.call_tool("get_capabilities", {})
             assert capability.structured_content["ok"] is True
-            assert capability.structured_content["data"]["mutation_tools"] == []
+            assert capability.structured_content["data"]["mutation_tools"] == [
+                "start_run", "start_workflow"
+            ]
             assert (
                 capability.structured_content["data"][
                     "plaintext_credentials_compatible"
@@ -172,6 +263,789 @@ def test_mcp_client_discovers_exactly_seven_non_mutating_tools(tmp_path: Path) -
             assert capability.structured_content["data"]["preflight_mutates_infrastructure"] is False
 
     asyncio.run(scenario())
+
+
+def test_start_run_requires_current_preflight_and_is_idempotent(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=QueuedExecutor())
+    validation = service.validate_config(EXAMPLE)
+    digest = validation["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    first = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="vm-run-001",
+    )
+    assert first["ok"] is True
+    assert first["state"] == "QUEUED"
+    run_id = first["data"]["run"]["run_id"]
+    assert re.fullmatch(r"run-\d{8}T\d{6}Z-[0-9a-f]{12}", run_id)
+
+    replay = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="vm-run-001",
+    )
+    assert replay["data"]["idempotent_replay"] is True
+    assert replay["data"]["run"]["run_id"] == run_id
+
+    events = service.get_run_events(run_id)
+    assert events["state"] == "EVENTS_AVAILABLE"
+    assert events["data"]["events"][0]["type"] == "RUN_QUEUED"
+
+
+def test_get_capabilities_reports_downstream_execution_scope(tmp_path: Path) -> None:
+    service = make_service(tmp_path, downstream_executor=QueuedExecutor())
+    capabilities = service.get_capabilities()["data"]
+    assert "downstream" in capabilities["execution_scope"]
+    assert capabilities["infrastructure_side_effects"] is True
+
+
+def test_downstream_plan_is_executable(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        downstream_executor=QueuedExecutor(),
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "COMPONENT"
+    assert plan["component_plans"][0]["details"]["cluster_name"] == "downstream"
+
+
+def test_preflight_includes_rancher_lb_https_for_downstream_plan(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    validation = service.validate_config(EXAMPLE)
+    plan = service.build_plan(
+        validation["data"]["config_digest"], ["downstream"]
+    )
+
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        result = service.preflight_plan(plan["data"]["plan"]["plan_id"])
+
+    checks = result["data"]["preflight"]["checks"]
+    rancher_lb_check = next(
+        item for item in checks if item["name"] == "tcp.rancher_lb_https"
+    )
+    assert rancher_lb_check["status"] == "PASSED"
+    assert rancher_lb_check["target"] == {"host": "192.0.2.20", "port": 443}
+    node_checks = [
+        item for item in checks if item["name"].startswith("tcp.node_ssh.")
+    ]
+    assert len(node_checks) == 10
+    assert all(item["status"] == "PASSED" for item in node_checks)
+
+
+def test_start_run_downstream_requires_successful_rancher_run(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    downstream_executor = CapturingExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        downstream_executor=downstream_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="downstream-no-rancher",
+    )
+    assert result["ok"] is False
+    assert result["state"] == "RANCHER_ARTIFACT_REQUIRED"
+    assert downstream_executor.submitted == {}
+
+
+def test_start_run_downstream_reuses_rancher_ca_artifact(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    downstream_executor = CapturingExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        downstream_executor=downstream_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    service.store.save_run(
+        {
+            "run_id": "run-rancher-success-000000",
+            "state": "SUCCEEDED",
+            "plan_id": "plan-rancher-seed",
+            "config_digest": digest,
+            "preflight_id": "preflight-rancher-seed",
+            "target_components": ["rancher"],
+            "created_at": "2026-08-06T00:00:00Z",
+            "updated_at": "2026-08-06T00:00:00Z",
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {
+                    "component": "rancher",
+                    "state": "SUCCEEDED",
+                    "checkpoint": "completed",
+                    "message": "RANCHER_SUCCEEDED",
+                }
+            ],
+        }
+    )
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="downstream-with-rancher",
+    )
+    assert result["ok"] is True
+    assert result["state"] == "QUEUED"
+    submitted_config = downstream_executor.submitted["config"]
+    assert isinstance(submitted_config, dict)
+    assert submitted_config["_rancher_ca_source"] == (
+        "/data/rancher/automation/runs/run-rancher-success-000000/"
+        "rancher/cert/output/cacerts.pem"
+    )
+
+
+def test_start_run_downstream_reuses_rancher_artifact_from_workflow(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    downstream_executor = CapturingExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        downstream_executor=downstream_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    service.store.save_run(
+        {
+            "run_id": "run-workflow-rancher-success",
+            "state": "SUCCEEDED",
+            "plan_id": "plan-workflow-seed",
+            "config_digest": digest,
+            "preflight_id": "preflight-workflow-seed",
+            "target_components": ["vm", "node-init", "local-rke2", "rancher"],
+            "created_at": "2026-08-06T00:00:00Z",
+            "updated_at": "2026-08-06T00:00:00Z",
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {"component": "vm", "state": "SUCCEEDED"},
+                {"component": "node-init", "state": "SUCCEEDED"},
+                {"component": "local-rke2", "state": "SUCCEEDED"},
+                {"component": "rancher", "state": "SUCCEEDED"},
+            ],
+        }
+    )
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="downstream-from-workflow",
+    )
+    assert result["ok"] is True
+    assert result["state"] == "QUEUED"
+    submitted_config = downstream_executor.submitted["config"]
+    assert isinstance(submitted_config, dict)
+    assert submitted_config["_rancher_ca_source"] == (
+        "/data/rancher/automation/runs/run-workflow-rancher-success/"
+        "rancher/cert/output/cacerts.pem"
+    )
+
+
+def test_start_run_rancher_reuses_local_rke2_artifact_from_workflow(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    rancher_executor = CapturingExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        rancher_executor=rancher_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    service.store.save_run(
+        {
+            "run_id": "run-workflow-local-success",
+            "state": "SUCCEEDED",
+            "plan_id": "plan-workflow-local-seed",
+            "config_digest": digest,
+            "preflight_id": "preflight-workflow-local-seed",
+            "target_components": ["vm", "node-init", "local-rke2"],
+            "created_at": "2026-08-06T00:00:00Z",
+            "updated_at": "2026-08-06T00:00:00Z",
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {"component": "vm", "state": "SUCCEEDED"},
+                {"component": "node-init", "state": "SUCCEEDED"},
+                {"component": "local-rke2", "state": "SUCCEEDED"},
+            ],
+        }
+    )
+    plan = service.build_plan(digest, ["rancher"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="rancher-from-workflow",
+    )
+    assert result["ok"] is True
+    assert result["state"] == "QUEUED"
+    submitted_config = rancher_executor.submitted["config"]
+    assert isinstance(submitted_config, dict)
+    assert submitted_config["_rancher_kubeconfig_source"] == (
+        "/data/rancher/automation/runs/run-workflow-local-success/"
+        "kubeconfig/rke2.yaml"
+    )
+
+
+def test_downstream_versions_tf_renders_exact_provider_version(tmp_path: Path) -> None:
+    executor = DownstreamExecutor(
+        secret_root="/run/secrets",
+        assets_root=(
+            PROJECT_ROOT
+            / "src"
+            / "rancher_rke2_mcp"
+            / "assets"
+            / "downstream"
+        ),
+    )
+    rendered = executor._downstream_versions_tf(
+        {"versions": {"rancher2_provider": "13.1.4"}}
+    )
+    assert 'version = "13.1.4"' in rendered
+    assert "__RANCHER2_PROVIDER_VERSION__" not in rendered
+
+
+def test_downstream_assets_cover_required_stages() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "downstream"
+    runner = (assets / "downstream-runner.sh").read_text(encoding="utf-8")
+    playbook = (
+        assets / "ansible" / "playbooks" / "downstream-register.yml"
+    ).read_text(encoding="utf-8")
+    executor_source = (
+        PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py"
+    ).read_text(encoding="utf-8")
+
+    assert "install-control-dependencies.log" in runner
+    assert "provider-cache.log" in runner
+    assert "rancher-api-token.log" in runner
+    assert "terraform-init.log" in runner
+    assert "terraform-apply.log" in runner
+    assert "save-registration-command.log" in runner
+    assert "downstream-register.log" in runner
+    assert "DOWNSTREAM_LOG_MISSING" in runner
+    assert "checkpoint.yaml" in runner
+    assert "downstream_first_controlplane" in playbook
+    assert "downstream_first_worker" in playbook
+    assert "downstream_nodes" in playbook
+    assert "class DownstreamExecutor" in executor_source
+    assert "_rancher_ca_source" in executor_source
+
+
+def test_downstream_inventory_carries_registration_vars(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    config = service.store.get_config(
+        service.validate_config(EXAMPLE)["data"]["config_digest"]
+    )
+    assert config is not None
+    executor = DownstreamExecutor(secret_root=str(secret_root))
+    inventory = executor._downstream_inventory(
+        config,
+        "/data/rancher/automation/runs/run-test-0001/downstream",
+    )
+    all_vars = inventory["all"]["vars"]
+    assert all_vars["automation_run_id"] == "run-test-0001"
+    assert all_vars["downstream_registration_command_file"] == (
+        "/data/rancher/automation/runs/run-test-0001/downstream/"
+        "secrets/downstream-registration-command"
+    )
+    assert all_vars["downstream_minimum_kernel"] == "5.8"
+    assert all_vars["downstream_registration_require_insecure_curl"] is True
+
+
+def test_render_runbook_renders_audited_manual(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+
+    result = service.render_runbook(plan["plan_id"])
+    assert result["ok"] is True
+    assert result["state"] == "RENDERED"
+    data = result["data"]
+    assert data["format"] == "markdown"
+    assert data["output_profile"] == "human-step-by-step"
+    assert data["audit_findings"] == []
+    assert Path(data["artifact_path"]).is_file()
+    manual = data["manual"]
+    assert "# RKE2 与 Rancher 人工安装操作手册" in manual
+    assert plan["plan_id"] in manual
+    assert "## 3. 控制节点 Docker 工作容器" in manual
+    assert "## 11. Rancher Web UI 手工创建下游集群" in manual
+    assert "192.0.2.20" in manual
+    assert "<命令>" not in manual
+    assert "{{" not in manual
+    assert "docker-secret://control_host_password" in manual
+    assert "审核结论: PASS" in manual
+    assert "执行位置：" in manual
+    assert "chartValues:" in manual
+    assert "mirrors:" in manual
+    assert "configs:" in manual
+    assert "rke2-server.service" in manual
+    serialized = json.dumps(manual)
+    assert "***REDACTED***" not in serialized
+    assert '"password":' not in serialized
+
+
+def test_render_runbook_validates_inputs(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+
+    invalid_format = service.render_runbook(plan["plan_id"], format="html")
+    assert invalid_format["ok"] is False
+    assert invalid_format["state"] == "INVALID"
+
+    missing = service.render_runbook("plan-does-not-exist")
+    assert missing["ok"] is False
+    assert missing["state"] == "NOT_FOUND"
+
+
+def test_registry_defaults_follow_edition_policy(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    validation = service.validate_config(EXAMPLE)
+    config = service.store.get_config(validation["data"]["config_digest"])
+    assert config is not None
+
+    downstream = DownstreamExecutor(secret_root="/run/secrets")
+    local = LocalRke2Executor(secret_root="/run/secrets")
+
+    downstream_mirrors = {
+        item["hostname"]: item
+        for item in downstream._default_downstream_registries(config)["mirrors"]
+    }
+    assert downstream_mirrors["docker.io"]["rewrites"] == {}
+    assert "registry.rancher.cn" in downstream_mirrors
+    assert downstream_mirrors["registry.rancher.cn"]["rewrites"] == {}
+    assert "registry.rancher.com" not in downstream_mirrors
+
+    local_vars = local._local_group_vars(
+        config,
+        "/data/rancher/automation/runs/run-registry-test/local-rke2",
+    )
+    local_mirrors = local_vars["registry_mirrors"]
+    assert local_mirrors["docker.io"]["rewrites"] == {}
+    assert "registry.rancher.cn" in local_mirrors
+    assert local_mirrors["registry.rancher.cn"]["rewrites"] == {}
+    assert "registry.rancher.com" not in local_mirrors
+
+    non_ent = dict(config)
+    non_ent["versions"] = dict(config["versions"])
+    non_ent["versions"]["rancher"] = "2.9.2"
+    standard_mirrors = {
+        item["hostname"]: item
+        for item in downstream._default_downstream_registries(non_ent)["mirrors"]
+    }
+    assert "registry.rancher.com" in standard_mirrors
+    assert "registry.rancher.cn" not in standard_mirrors
+    assert standard_mirrors["registry.rancher.com"]["rewrites"] == {
+        "(^.+$)": "registry.rancher.com/$1"
+    }
+
+
+def test_validate_config_returns_effective_config_with_defaults_expanded(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    data = yaml.safe_load(EXAMPLE)
+    data["downstream_cluster"].pop("rke_config", None)
+    data["downstream_cluster"].pop("registries", None)
+    data["local_rke2"].pop("registry", None)
+    data["registry"]["username"] = "admin"
+    data["registry"]["password_ref"] = "docker-secret://registry_password"
+    minimal = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+
+    result = make_service(tmp_path).validate_config(minimal)
+    assert result["ok"] is True
+    effective = result["data"]["effective_config"]
+    assert isinstance(effective, dict)
+
+    downstream = effective["downstream_cluster"]
+    rke_config = downstream["rke_config"]
+    assert rke_config["machinePools"] is None
+    assert rke_config["chartValues"]["rke2-cilium"]["kubeProxyReplacement"] is True
+    registries = downstream["registries"]
+    assert registries["enabled"] is True
+    mirror_map = {item["hostname"]: item for item in registries["mirrors"]}
+    assert mirror_map["docker.io"]["rewrites"] == {}
+    assert mirror_map["registry.rancher.cn"]["rewrites"] == {}
+
+    local_registry = effective["local_rke2"]["registry"]
+    local_mirrors = local_registry["mirrors"]
+    assert local_mirrors["docker.io"]["rewrites"] == {}
+    assert local_mirrors["registry.rancher.cn"]["rewrites"] == {}
+    harbor_config = local_registry["configs"]["registry.example.internal"]
+    assert harbor_config["auth"]["enabled"] is True
+    assert harbor_config["auth"]["password_ref"] == "docker-secret://registry_password"
+
+    serialized = json.dumps(effective, ensure_ascii=False)
+    assert "docker-secret://registry_password" in serialized
+    assert '"password":' not in serialized
+
+
+def test_executor_start_persists_running_state(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=RunningExecutor())
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    result = service.start_run(
+        plan_id=plan["plan_id"], config_digest=digest,
+        preflight_id=preflight["preflight_id"], approval_text=plan["approval_text"],
+        idempotency_key="running-vm-run",
+    )
+    run_id = result["data"]["run"]["run_id"]
+    stored = service.get_run(run_id)
+    assert stored["state"] == "RUNNING"
+    assert stored["data"]["run"]["component_states"][0]["checkpoint"] == "control_host_execution_started"
+    events = service.get_run_events(run_id)["data"]["events"]
+    assert [event["type"] for event in events] == ["RUN_QUEUED", "RUN_STARTED"]
+
+
+def test_workflow_runs_vm_then_node_init_after_one_approval(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm", "node-init"])["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["approval_text"] == f"APPROVE WORKFLOW {plan['plan_id']}"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="vm-node-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [item["state"] for item in stored["data"]["run"]["component_states"]] == [
+        "SUCCEEDED", "SUCCEEDED"
+    ]
+    assert vm_executor.artifact_paths[0].endswith("/vm")
+    assert node_executor.artifact_paths[0].endswith("/node-init")
+
+
+def test_workflow_runs_local_rke2_after_node_init(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    local_executor = WorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+        local_executor=local_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm", "node-init", "local-rke2"])["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="vm-node-local-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [item["state"] for item in stored["data"]["run"]["component_states"]] == [
+        "SUCCEEDED", "SUCCEEDED", "SUCCEEDED"
+    ]
+    assert local_executor.artifact_paths[0].endswith("/local-rke2")
+
+
+def test_workflow_runs_rancher_after_local_rke2_with_one_approval(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    local_executor = WorkflowExecutor()
+    rancher_executor = RancherWorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+        local_executor=local_executor,
+        rancher_executor=rancher_executor,
+    )
+    capabilities = service.get_capabilities()["data"]
+    assert ["vm", "node-init", "local-rke2", "rancher"] in capabilities[
+        "workflow_execution_scopes"
+    ]
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(
+        digest, ["vm", "node-init", "local-rke2", "rancher"]
+    )["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    assert plan["approval_text"] == f"APPROVE WORKFLOW {plan['plan_id']}"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="vm-node-local-rancher-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [
+        item["state"] for item in stored["data"]["run"]["component_states"]
+    ] == ["SUCCEEDED", "SUCCEEDED", "SUCCEEDED", "SUCCEEDED"]
+    assert local_executor.artifact_paths[0].endswith("/local-rke2")
+    assert rancher_executor.calls[0][1].endswith("/rancher")
+    rancher_config = rancher_executor.calls[0][0]
+    assert isinstance(rancher_config, dict)
+    assert rancher_config["_rancher_kubeconfig_source"].endswith(
+        "/runs/" + run_id + "/kubeconfig/rke2.yaml"
+    )
+
+
+def test_workflow_runs_downstream_after_rancher_with_one_approval(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    local_executor = WorkflowExecutor()
+    rancher_executor = RancherWorkflowExecutor()
+    downstream_executor = DownstreamWorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+        local_executor=local_executor,
+        rancher_executor=rancher_executor,
+        downstream_executor=downstream_executor,
+    )
+    capabilities = service.get_capabilities()["data"]
+    assert ["vm", "node-init", "local-rke2", "rancher", "downstream"] in capabilities[
+        "workflow_execution_scopes"
+    ]
+    data = yaml.safe_load(EXAMPLE)
+    data["deliverables"]["installation_manual"] = "true"
+    config_yaml = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    digest = service.validate_config(config_yaml)["data"]["config_digest"]
+    plan = service.build_plan(
+        digest, ["vm", "node-init", "local-rke2", "rancher", "downstream"]
+    )["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    assert plan["approval_text"] == f"APPROVE WORKFLOW {plan['plan_id']}"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="vm-node-local-rancher-downstream-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [
+        item["state"] for item in stored["data"]["run"]["component_states"]
+    ] == ["SUCCEEDED"] * 5
+    assert downstream_executor.calls[0][1].endswith("/downstream")
+    downstream_config = downstream_executor.calls[0][0]
+    assert isinstance(downstream_config, dict)
+    assert downstream_config["_rancher_ca_source"].endswith(
+        "/runs/" + run_id + "/rancher/cert/output/cacerts.pem"
+    )
+    runbook = stored["data"]["run"].get("runbook") or {}
+    assert runbook.get("rendered") is True
+    assert runbook.get("audit_passed") is True
+    assert Path(runbook["artifact_path"]).is_file()
+
+
+def test_workflow_skips_runbook_when_installation_manual_is_ask(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    data = yaml.safe_load(EXAMPLE)
+    data["deliverables"]["installation_manual"] = "ask"
+    ask_yaml = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+    )
+    digest = service.validate_config(ask_yaml)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm", "node-init"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="ask-runbook-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    runbook = stored["data"]["run"].get("runbook") or {}
+    assert runbook.get("rendered") is False
+    assert runbook.get("setting") == "ask"
+
+
+def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "local-rke2"
+    runner = (assets / "local-rke2-runner.sh").read_text(encoding="utf-8")
+    verifier = (assets / "verify-inventory.py").read_text(encoding="utf-8")
+    playbook = (assets / "ansible" / "playbooks" / "local-rke2.yml").read_text(
+        encoding="utf-8"
+    )
+    tasks = (assets / "ansible" / "roles" / "local_rke2" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    executor_source = (PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py").read_text(
+        encoding="utf-8"
+    )
+    assert "ansible-inventory --list" in runner
+    assert "verify-inventory.py" in runner
+    assert "inventory/hosts.yml" in executor_source
+    assert "group_vars/all.yml" in executor_source
+    assert "INVENTORY_GROUP_INVALID" in verifier
+    assert "INVENTORY_VARIABLE_INVALID" in verifier
+    assert "vars_files:" in playbook
+    assert "../group_vars/all.yml" in playbook
+    assert "Count Ready local servers with whitespace-safe column parsing" in tasks
+    assert "rke2_ready_server_count.stdout | int == 3" in tasks
+    assert "Wait for every local server to report Ready after image pulls" in tasks
+    assert "retries: 30" in tasks
+    assert "delay: 20" in tasks
+
+
+def test_start_run_rejects_full_plan_in_0_4_0(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=QueuedExecutor())
+    validation = service.validate_config(EXAMPLE)
+    digest = validation["data"]["config_digest"]
+    plan = service.build_plan(digest, ["all"])["data"]["plan"]
+
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="all-run-001",
+    )
+    assert result["ok"] is False
+    assert result["state"] == "UNSUPPORTED_SCOPE"
 
 
 def test_preflight_checks_secret_availability_and_tcp_without_exposing_values(
@@ -199,13 +1073,43 @@ def test_preflight_checks_secret_availability_and_tcp_without_exposing_values(
     assert preflight["non_mutating"] is True
     assert preflight["authentication_attempted"] is False
     assert preflight["summary"]["failed"] == 0
+    assert preflight["summary"]["skipped"] == 14
     assert any(item["name"] == "tcp.vsphere_https" for item in preflight["checks"])
+    rancher_lb_check = next(
+        item for item in preflight["checks"] if item["name"] == "tcp.rancher_lb_https"
+    )
+    assert rancher_lb_check["status"] == "SKIPPED"
+    assert all(
+        item["status"] == "SKIPPED"
+        for item in preflight["checks"]
+        if item["name"].startswith("tcp.node_ssh.")
+    )
     serialized = json.dumps(preflight, ensure_ascii=False)
     assert "control_host_password-value" not in serialized
     assert "node_password-value" not in serialized
 
     fetched = service.get_preflight(preflight["preflight_id"])
     assert fetched["state"] == "PASSED"
+
+
+def test_preflight_checks_node_ssh_when_plan_does_not_include_vm(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    validation = service.validate_config(EXAMPLE)
+    plan = service.build_plan(validation["data"]["config_digest"], ["node-init"])
+
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        result = service.preflight_plan(plan["data"]["plan"]["plan_id"])
+
+    checks = result["data"]["preflight"]["checks"]
+    node_checks = [
+        item for item in checks if item["name"].startswith("tcp.node_ssh.")
+    ]
+    assert len(node_checks) == 10
+    assert all(item["status"] == "PASSED" for item in node_checks)
 
 
 def test_preflight_reports_unmounted_secret_without_returning_reference_value(
@@ -228,10 +1132,9 @@ def test_preflight_reports_unmounted_secret_without_returning_reference_value(
     )
 
 
-def test_source_has_no_infrastructure_execution_imports() -> None:
+def test_only_the_vm_executor_may_import_ssh_client() -> None:
     forbidden = {
         "subprocess",
-        "paramiko",
         "ansible_runner",
         "docker",
         "pyVmomi",
@@ -240,6 +1143,8 @@ def test_source_has_no_infrastructure_execution_imports() -> None:
     source_root = PROJECT_ROOT / "src" / "rancher_rke2_mcp"
     imported: set[str] = set()
     for path in source_root.glob("*.py"):
+        if path.name == "executor.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -247,6 +1152,88 @@ def test_source_has_no_infrastructure_execution_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
     assert imported.isdisjoint(forbidden)
+
+
+def test_vm_dependency_installer_handles_pristine_tzdata_with_readonly_localtime() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    installer = (assets / "install-control-dependencies.sh").read_text(encoding="utf-8")
+
+    assert '-v /etc/localtime:/etc/localtime:ro' in runner
+    assert 'install-control-dependencies.sh' in runner
+    assert "tzdata.postinst" in installer
+    assert "dpkg --configure -a" in installer
+    assert "apt-mark hold tzdata" in installer
+    assert "mv -f \"$backup\" \"$postinst\"" in installer
+
+
+def test_vm_proxy_environment_is_limited_to_dependency_downloads() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    installer = (assets / "install-control-dependencies.sh").read_text(encoding="utf-8")
+    executor_source = (PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "executor.py").read_text(encoding="utf-8")
+
+    assert 'source "$run_dir/.dependency.env"' in installer
+    assert 'Acquire::http::Proxy=$HTTP_PROXY' in installer
+    assert 'Acquire::https::Proxy=$HTTP_PROXY' in installer
+    assert 'curl_args+=(--proxy "$HTTP_PROXY")' in installer
+    assert "DEPENDENCY_ENV_MISSING" in runner
+    assert "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy" in runner
+    assert "def _dependency_env" in executor_source
+    assert "Terraform talks directly to vCenter" in executor_source
+
+
+def test_vm_provider_cache_uses_persistent_filesystem_mirror() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    cache_script = (assets / "prepare-terraform-provider-cache.sh").read_text(encoding="utf-8")
+
+    assert 'provider-cache.log' in runner
+    assert 'prepare-terraform-provider-cache.sh' in runner
+    assert 'TF_CLI_CONFIG_FILE=/software/terraform/provider-cache-config/vmware-vsphere.tfrc' in runner
+    assert 'provider-downloads/registry.terraform.io/vmware/vsphere/$version' in cache_script
+    assert 'providers/registry.terraform.io/vmware/vsphere/$version/$platform' in cache_script
+    assert 'OFFLINE_PROVIDER_FILE_MISSING' in cache_script
+    assert 'PROVIDER_CHECKSUM_MISMATCH' in cache_script
+    assert 'filesystem_mirror' in cache_script
+
+
+def test_vm_terraform_assets_are_uploaded_to_the_execution_directory() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    executor = VmExecutor(secret_root="/run/secrets", assets_root=assets)
+
+    assert executor._asset_destination(assets / "terraform" / "vm.tf", "/run/vm") == "/run/vm/vm.tf"
+    assert executor._asset_destination(assets / "terraform" / "data.tf", "/run/vm") == "/run/vm/data.tf"
+    assert executor._asset_destination(assets / "run-logged.sh", "/run/vm") == "/run/vm/run-logged.sh"
+
+
+def test_vm_runner_requires_expected_vm_resources_in_terraform_state() -> None:
+    assets = PROJECT_ROOT / "src" / "rancher_rke2_mcp" / "assets" / "vm"
+    runner = (assets / "vm-runner.sh").read_text(encoding="utf-8")
+    verifier = (assets / "verify-vm-state.py").read_text(encoding="utf-8")
+
+    assert "terraform state list" in runner
+    assert "verify-vm-state.py" in runner
+    assert "VM_STATE_COUNT_MISMATCH" in verifier
+    assert "vsphere_virtual_machine.vm[" in verifier
+
+
+def test_successful_executor_persists_vm_result(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root, executor=SuccessfulExecutor())
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    result = service.start_run(
+        plan_id=plan["plan_id"], config_digest=digest,
+        preflight_id=preflight["preflight_id"], approval_text=plan["approval_text"],
+        idempotency_key="successful-vm-run",
+    )
+    stored = service.get_run(result["data"]["run"]["run_id"])
+    assert stored["state"] == "SUCCEEDED"
+    assert stored["data"]["run"]["component_states"][0]["artifact_path"].endswith("/vm")
 
 
 def test_reads_bearer_token_from_secret_file(tmp_path: Path) -> None:
@@ -315,7 +1302,9 @@ def test_authenticated_streamable_http_end_to_end(tmp_path: Path) -> None:
                 transport = streamable_http_client(url, http_client=authorized)
                 async with Client(transport, cache=None) as client:
                     tools = await client.list_tools()
-                    assert {item.name for item in tools.tools} == set(READ_ONLY_TOOLS)
+                    assert {item.name for item in tools.tools} == set(
+                        READ_ONLY_TOOLS
+                    ) | set(MUTATION_TOOLS)
 
                     validation_result = await client.call_tool(
                         "validate_config",

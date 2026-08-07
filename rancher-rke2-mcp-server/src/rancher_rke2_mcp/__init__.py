@@ -1,3 +1,3 @@
-"""Read-only Rancher/RKE2 MCP planning server."""
+"""Rancher/RKE2 MCP planning and VM execution server."""
 
-__version__ = "0.3.0"
+__version__ = "0.11.9"

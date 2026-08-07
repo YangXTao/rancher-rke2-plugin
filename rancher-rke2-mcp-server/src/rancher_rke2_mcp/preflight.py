@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 import socket
 from typing import Any
 from urllib.parse import urlsplit
@@ -43,11 +44,41 @@ class NonMutatingPreflight:
         self.timeout_seconds = timeout_seconds
         self.tcp_probe = tcp_probe
 
-    def run(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+    def run(
+        self,
+        config: dict[str, Any],
+        *,
+        planned_components: list[str],
+    ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         checks.extend(self._secret_checks(config))
-        checks.extend(self._connectivity_checks(config))
+        if "vm" in planned_components:
+            checks.append(self._known_hosts_check())
+        checks.extend(
+            self._connectivity_checks(
+                config,
+                node_ssh_required="vm" not in planned_components,
+                planned_components=planned_components,
+            )
+        )
         return checks
+
+    def _known_hosts_check(self) -> dict[str, Any]:
+        path = Path(self.resolver.root) / "control_host_known_hosts"
+        try:
+            available = path.is_file() and bool(path.read_text(encoding="utf-8").strip())
+        except OSError:
+            available = False
+        return self._check(
+            name="ssh.control_host_known_hosts",
+            category="ssh_host_key",
+            status="PASSED" if available else "FAILED",
+            message=(
+                "A non-empty control-host known_hosts file is mounted."
+                if available
+                else "VM execution requires a non-empty mounted control_host_known_hosts file."
+            ),
+        )
 
     def _secret_checks(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         references: list[tuple[str, str | None]] = [
@@ -93,7 +124,13 @@ class NonMutatingPreflight:
                 )
         return checks
 
-    def _connectivity_checks(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+    def _connectivity_checks(
+        self,
+        config: dict[str, Any],
+        *,
+        node_ssh_required: bool,
+        planned_components: list[str],
+    ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         control_host = config["execution"]["control_host"]
         checks.append(
@@ -112,14 +149,49 @@ class NonMutatingPreflight:
             *config["nodes"]["downstream"]["workers"],
         ]
         for node in nodes:
-            checks.append(
-                self._tcp_check(
-                    f"tcp.node_ssh.{node['hostname']}", str(node["ip"]), node_port
+            name = f"tcp.node_ssh.{node['hostname']}"
+            if node_ssh_required:
+                checks.append(self._tcp_check(name, str(node["ip"]), node_port))
+            else:
+                checks.append(
+                    self._check(
+                        name=name,
+                        category="connectivity",
+                        status="SKIPPED",
+                        target={"host": str(node["ip"]), "port": node_port},
+                        message=(
+                            "Node SSH check is deferred because this plan includes the VM "
+                            "component and the node is an intended, not yet created resource."
+                        ),
+                    )
                 )
-            )
 
         checks.append(self._parsed_tcp_check("tcp.vsphere_https", config["vsphere"]["server"], 443))
         checks.append(self._parsed_tcp_check("tcp.registry_https", config["registry"]["hostname"], 443))
+        if "downstream" in planned_components:
+            lb = config["nodes"]["management"]["load_balancer"]
+            if "vm" in planned_components:
+                checks.append(
+                    self._check(
+                        name="tcp.rancher_lb_https",
+                        category="connectivity",
+                        status="SKIPPED",
+                        target={"host": str(lb["ip"]), "port": 443},
+                        message=(
+                            "RancherLB HTTPS check is deferred because this plan "
+                            "includes the VM component and the RancherLB is an "
+                            "intended, not yet recreated resource."
+                        ),
+                    )
+                )
+            else:
+                checks.append(
+                    self._tcp_check(
+                        "tcp.rancher_lb_https",
+                        str(lb["ip"]),
+                        443,
+                    )
+                )
 
         proxy_url = config["downloads"].get("proxy_url", "")
         if proxy_url:

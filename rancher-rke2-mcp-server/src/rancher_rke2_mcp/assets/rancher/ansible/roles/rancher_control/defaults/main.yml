@@ -1,0 +1,111 @@
+---
+rancher_version: ""
+rancher_base_version: ""
+rancher_chart_edition: standard
+rancher_chart_path: ""
+rancher_chart_manifest_path: ""
+rancher_chart_repository_name: rancher-prime
+rancher_chart_repository_url: https://charts.rancher.com/server-charts/prime
+rancher_chart_enterprise_base_url: https://charts.rancher.cn
+rancher_chart_offline_file: ""
+rancher_download_mode: online
+rancher_software_root: /software
+rancher_rke2_version: v1.34.8+rke2r2
+rancher_helm_version: 4.2.3
+rancher_cfssl_version: 1.6.1
+rancher_docker_version: 20.10.24
+rancher_enterprise_image_archive_name: ""
+rancher_enterprise_image_archive_url: ""
+rancher_enterprise_registry_job_image: "registry.rancher.cn/cnrancher/registry-jobs:rpm-v2.13.6-ent"
+rancher_enterprise_image_upload_jobs: 4
+rancher_hostname: ""
+rancher_access_mode: fqdn
+rancher_publish_mode: nodeport-l7
+rancher_private_ca: true
+rancher_certificate:
+  source: generate
+  ca_file: ""
+  cert_file: ""
+  key_file: ""
+  validity_days: 3650
+  ip_sans: []
+rancher_http_nodeport: 30080
+rancher_additional_trusted_ca_file: "{{ rancher_certificate.ca_file }}"
+rancher_helm_namespace: cattle-system
+rancher_helm_release_name: rancher
+rancher_replicas: 3
+rancher_helm_tls: external
+rancher_helm_service_type: NodePort
+rancher_use_bundled_system_chart: true
+rancher_standard_profile:
+  additional_trusted_cas: false
+  rancher_image_path: rancher/rancher
+rancher_enterprise_profile:
+  audit_log:
+    enabled: true
+    destination: hostPath
+    max_age: 180
+    level: 3
+  additional_trusted_cas: false
+  rancher_image_path: registry.rancher.cn/prime/rancher
+  post_delete_image_path: registry.rancher.cn/rancher/shell
+rancher_helm_overrides:
+  common: {}
+  standard: {}
+  enterprise: {}
+rancher_helm_install_commands:
+  standard: |
+    helm upgrade --install rancher "${RANCHER_CHART}" \
+      --namespace cattle-system \
+      --create-namespace \
+      --set-string hostname="${RANCHER_HOSTNAME}" \
+      --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+      --set tls=external \
+      --set privateCA=true \
+      --set ingress.enabled=false \
+      --set service.type=ClusterIP \
+      --set useBundledSystemChart=true \
+      --set additionalTrustedCAs=false \
+      --set replicas=3 \
+      --set-string rancherImage="${RANCHER_IMAGE}" \
+      --kubeconfig "${RANCHER_KUBECONFIG}" \
+      --wait --timeout 15m
+  enterprise: |
+    helm upgrade --install rancher "${RANCHER_CHART}" \
+      --namespace cattle-system \
+      --create-namespace \
+      --set auditLog.enabled=true \
+      --set auditLog.destination=hostPath \
+      --set auditLog.maxAge=180 \
+      --set auditLog.level=3 \
+      --set-string hostname="${RANCHER_HOSTNAME}" \
+      --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+      --set tls=external \
+      --set privateCA=true \
+      --set ingress.enabled=false \
+      --set service.type=NodePort \
+      --set service.nodePort="${RANCHER_HTTP_NODEPORT}" \
+      --set useBundledSystemChart=true \
+      --set additionalTrustedCAs=false \
+      --set replicas=3 \
+      --set-string rancherImage="${RANCHER_IMAGE}" \
+      --set-string postDelete.image.repository="${POST_DELETE_IMAGE}" \
+      --kubeconfig "${RANCHER_KUBECONFIG}" \
+      --wait --timeout 15m
+rancher_run_root: "/data/rancher/automation/runs/{{ automation_run_id }}"
+rancher_kubeconfig: "{{ rancher_run_root }}/kubeconfig/rke2.yaml"
+rancher_rendered_dir: "{{ rancher_run_root }}/rendered/rancher"
+rancher_bootstrap_password_file: "{{ rancher_run_root }}/secrets/rancher-bootstrap-password"
+rancher_certificate_generator: "{{ playbook_dir }}/../../scripts/generate-rancher-certs.sh"
+rancher_enterprise_certificate_generator: "{{ playbook_dir }}/../../scripts/generate-rancher-certs-cfssl.sh"
+rancher_enterprise_artifact_preparer: "{{ playbook_dir }}/../../scripts/prepare-rancher-enterprise-artifacts.sh"
+rancher_enterprise_image_uploader: "{{ playbook_dir }}/../../scripts/upload-rancher-enterprise-images.sh"
+rancher_chart_preparer: "{{ playbook_dir }}/../../scripts/prepare-rancher-chart.sh"
+rancher_lb_ip: ""
+registry_enabled: false
+registry_hostname: ""
+registry_auth_secret_enabled: false
+registry_auth_secret_namespace: fleet-default
+registry_auth_secret_name: myharbor-auth
+registry_username: ""
+registry_password: ""

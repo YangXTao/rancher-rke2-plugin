@@ -1,0 +1,105 @@
+run: {run_id: auto, workspace: /data/rancher/automation}
+execution:
+  control_host: {address: 192.168.2.248, port: 22, username: root, password: "abc@123"}
+  container:
+    {enabled: true, name: rancher-rke2-control, image: "ubuntu:24.04",
+     network: host, software_mount: "/software:/software",
+     workspace_mount: "/data/rancher/automation:/data/rancher/automation",
+     host_docker: {version: "20.10.24", install_method: static-binary, package_manager_install: false,
+       archive: "/software/docker/docker-20.10.24.tgz"}}
+control_dependencies:
+  auto_install: true
+  proxy_url: "http://zhisuan:Zskj0608@20.2.210.192:60000"
+node_access: {username: root, port: 22, password: "Zskj@0608"}
+local_rke2:
+  version: "v1.34.8+rke2r2"
+  kubeconfig: /data/rancher/automation/runs/<run_id>/local-rke2/rke2.yaml
+  management_ips: [192.168.2.21, 192.168.2.22, 192.168.2.23]
+rancher:
+  version: "2.13.6-ent"
+  hostname: 192.168.2.20
+  bootstrap_password: "abc@123456"
+  replicas: 3
+  tls: external
+  private_ca: true
+  nodeport: 30080
+  chart:
+    standard_repository: https://charts.rancher.com/server-charts/prime
+    enterprise_base_url: https://charts.rancher.cn
+    enterprise_file: /software/rancher/rancher-2.13.6-ent.tgz
+  enterprise_artifacts:
+    software_root: /software
+    cfssl_version: "1.6.1"
+    helm_version: "4.2.3"
+    docker_version: "20.10.24"
+    # 启用企业版镜像归档上传时填写，例如 v2.13.6-ent_amd64.zip；在线直连Harbor时保持空。
+    image_archive_name: ""
+    image_archive_url: ""
+    registry_job_image: registry.rancher.cn/cnrancher/registry-jobs:rpm-v2.13.6-ent
+    upload_jobs: 4
+  helm_overrides: {}
+  helm_install_commands:
+    standard: |
+      helm upgrade --install rancher "${RANCHER_CHART}" \
+        --namespace cattle-system \
+        --create-namespace \
+        --set-string hostname="${RANCHER_HOSTNAME}" \
+        --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+        --set tls=external \
+        --set privateCA=true \
+        --set ingress.enabled=false \
+        --set service.type=ClusterIP \
+        --set useBundledSystemChart=true \
+        --set additionalTrustedCAs=false \
+        --set replicas=3 \
+        --set-string rancherImage="${RANCHER_IMAGE}" \
+        --kubeconfig "${RANCHER_KUBECONFIG}" \
+        --wait --timeout 15m
+    enterprise: |
+      helm upgrade --install rancher "${RANCHER_CHART}" \
+        --namespace cattle-system \
+        --create-namespace \
+        --set auditLog.enabled=true \
+        --set auditLog.destination=hostPath \
+        --set auditLog.maxAge=180 \
+        --set auditLog.level=3 \
+        --set-string hostname="${RANCHER_HOSTNAME}" \
+        --set-string bootstrapPassword="${RANCHER_BOOTSTRAP_PASSWORD}" \
+        --set tls=external \
+        --set privateCA=true \
+        --set ingress.enabled=false \
+        --set service.type=NodePort \
+        --set service.nodePort="${RANCHER_HTTP_NODEPORT}" \
+        --set useBundledSystemChart=true \
+        --set additionalTrustedCAs=false \
+        --set replicas=3 \
+        --set-string rancherImage="${RANCHER_IMAGE}" \
+        --set-string postDelete.image.repository="${POST_DELETE_IMAGE}" \
+        --kubeconfig "${RANCHER_KUBECONFIG}" \
+        --wait --timeout 15m
+certificate:
+  source: generate-private-ca
+  ip_sans: [192.168.2.20]
+  validity_days: 3650
+  tool: cfssl
+  ca_file: /software/rancher/cert/output/cacerts.pem
+  cert_file: /software/rancher/cert/output/tls.crt
+  key_file: /software/rancher/cert/output/tls.key
+rancher_lb:
+  hostname: kata-rancherlb
+  ip: 192.168.2.20
+  runtime: docker
+  docker_archive: /software/docker/docker-20.10.24.tgz
+  nginx_image: 192.168.10.51/hub/nginx:1.27.0
+registry:
+  enabled: true
+  hostname: 192.168.10.51
+  insecure_skip_verify: true
+  auth_secret:
+    enabled: true
+    namespace: fleet-default
+    name: myharbor-auth
+    # Also used non-interactively by the Enterprise archive uploader.
+    username: admin
+    password: "Harbor12345"
+downloads: {mode: online, proxy_url: "http://zhisuan:Zskj0608@20.2.210.192:60000", software_root: /software}

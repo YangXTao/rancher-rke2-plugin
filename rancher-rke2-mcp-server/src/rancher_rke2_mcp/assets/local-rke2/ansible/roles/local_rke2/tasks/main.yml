@@ -1,0 +1,361 @@
+---
+- name: Validate fixed local-cluster architecture and artifact mode
+  ansible.builtin.assert:
+    that:
+      - groups['management_servers'] | length == 3
+      - rke2_management_version | length > 0
+      - rke2_bootstrap_endpoint | length > 0
+      - rke2_download_mode in ['online', 'offline']
+      - rke2_install_method == 'tar'
+      - rke2_control_artifact_path | length > 0
+      - rke2_remote_artifact_path | length > 0
+      - rke2_download_mode != 'online' or rke2_offline_image_files | length == 0
+    fail_msg: >-
+      Local RKE2 architecture or artifact configuration is invalid. Online mode must
+      not list image archives; offline mode may use the registry or preloaded archives.
+
+- name: Create protected local token directory
+  ansible.builtin.file:
+    path: "{{ rke2_token_file | dirname }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Generate or load the protected local RKE2 token
+  ansible.builtin.set_fact:
+    rke2_join_token: "{{ lookup('password', rke2_token_file + ' length=64 chars=ascii_letters,digits') | trim }}"
+  no_log: true
+
+- name: Enforce protected local RKE2 token permissions
+  ansible.builtin.file:
+    path: "{{ rke2_token_file }}"
+    state: file
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Inspect required Stage 30 files on the control host
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ rke2_install_script_source }}"
+    - "{{ rke2_binary_archive_source }}"
+    - "{{ rke2_checksum_source }}"
+    - "{{ rke2_manifest_source }}"
+  register: rke2_control_artifact_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Require every prepared Stage 30 file
+  ansible.builtin.assert:
+    that: item.stat.exists and item.stat.isreg
+    fail_msg: "Prepared Stage 30 artifact is missing: {{ item.item }}"
+  loop: "{{ rke2_control_artifact_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Load the prepared Stage 30 artifact manifest
+  ansible.builtin.include_vars:
+    file: "{{ rke2_manifest_source }}"
+    name: rke2_artifact_manifest
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Require the artifact manifest to match the approved mode and version
+  ansible.builtin.assert:
+    that:
+      - rke2_artifact_manifest.mode == rke2_download_mode
+      - rke2_artifact_manifest.rke2_version == rke2_management_version
+      - rke2_artifact_manifest.architecture == 'amd64'
+      - rke2_download_mode != 'online' or rke2_artifact_manifest.image_source == 'registry'
+      - rke2_download_mode != 'online' or (rke2_artifact_manifest.files | map(attribute='name') | select('match', '^rke2-images') | list | length == 0)
+      - rke2_download_mode != 'offline' or rke2_artifact_manifest.image_source in ['registry', 'local-archives']
+      - rke2_download_mode != 'offline' or (rke2_offline_image_files | difference(rke2_artifact_manifest.files | map(attribute='name') | list) | length == 0)
+    fail_msg: >-
+      The prepared Stage 30 manifest differs from the approved mode, version,
+      architecture, or image list. Rebuild the artifact set before continuing.
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Revalidate the prepared RKE2 binary checksum
+  ansible.builtin.shell: |
+    set -o pipefail
+    expected=$(awk -v name='{{ rke2_binary_archive_name }}' '$2 == name || $2 == "*" name {print $1; exit}' '{{ rke2_checksum_source }}')
+    actual=$(sha256sum '{{ rke2_binary_archive_source }}' | awk '{print $1}')
+    test -n "$expected" && test "$actual" = "$expected"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Inspect configured offline image archives on the control host
+  ansible.builtin.stat:
+    path: "{{ rke2_offline_image_source_dir }}/{{ item }}"
+  loop: "{{ rke2_offline_image_files }}"
+  register: rke2_offline_image_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: rke2_download_mode == 'offline'
+
+- name: Require every configured offline image archive
+  ansible.builtin.assert:
+    that: item.stat.exists and item.stat.isreg
+    fail_msg: "Offline RKE2 image archive is missing: {{ item.item }}"
+  loop: "{{ rke2_offline_image_stats.results | default([]) }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: rke2_download_mode == 'offline'
+
+- name: Inspect an existing RKE2 installation
+  ansible.builtin.command: /usr/local/bin/rke2 --version
+  register: existing_rke2_version
+  failed_when: false
+  changed_when: false
+
+- name: Stop when an existing RKE2 version differs from the approved version
+  ansible.builtin.assert:
+    that:
+      - existing_rke2_version.rc != 0 or rke2_management_version in existing_rke2_version.stdout
+    fail_msg: >-
+      Existing RKE2 does not match {{ rke2_management_version }}. Stage 30 will not
+      replace, uninstall, or reset it automatically.
+
+- name: Create remote RKE2 software directory
+  ansible.builtin.file:
+    path: "{{ rke2_remote_software_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Create remote RKE2 agent image directory
+  ansible.builtin.file:
+    path: "{{ rke2_agent_images_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Transfer the approved RKE2 installer
+  ansible.builtin.copy:
+    src: "{{ rke2_install_script_source }}"
+    dest: "{{ rke2_install_script }}"
+    mode: '0755'
+
+- name: Transfer the approved binary, checksum, and manifest to the RKE2 artifact directory
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ rke2_remote_artifact_path }}/{{ item | basename }}"
+    mode: '0644'
+  loop:
+    - "{{ rke2_binary_archive_source }}"
+    - "{{ rke2_checksum_source }}"
+    - "{{ rke2_manifest_source }}"
+
+- name: Transfer verified offline image archives
+  ansible.builtin.copy:
+    src: "{{ rke2_offline_image_source_dir }}/{{ item }}"
+    dest: "{{ rke2_agent_images_dir }}/{{ item }}"
+    mode: '0644'
+  loop: "{{ rke2_offline_image_files }}"
+  when: rke2_download_mode == 'offline'
+
+- name: Revalidate each offline image archive on the target server
+  ansible.builtin.shell: |
+    set -o pipefail
+    expected=$(awk -v name='{{ item }}' '$2 == name || $2 == "*" name {print $1; exit}' '{{ rke2_remote_artifact_path }}/{{ rke2_checksum_name }}')
+    actual=$(sha256sum '{{ rke2_agent_images_dir }}/{{ item }}' | awk '{print $1}')
+    test -n "$expected" && test "$actual" = "$expected"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  loop: "{{ rke2_offline_image_files }}"
+  when: rke2_download_mode == 'offline'
+
+- name: Create RKE2 configuration directory
+  ansible.builtin.file:
+    path: /etc/rancher/rke2
+    state: directory
+    mode: '0700'
+
+- name: Configure ten-year RKE2 signed certificate lifetime
+  ansible.builtin.copy:
+    dest: /etc/default/rke2-server
+    mode: '0644'
+    content: "CATTLE_NEW_SIGNED_CERT_EXPIRATION_DAYS={{ rke2_signed_cert_expiration_days }}\n"
+
+- name: Copy private registry CA to local RKE2 nodes
+  ansible.builtin.copy:
+    src: "{{ registry_ca_file }}"
+    dest: "{{ registry_ca_target }}"
+    mode: '0644'
+  when:
+    - registry_enabled
+    - registry_ca_file | length > 0
+
+- name: Render local RKE2 registry configuration
+  ansible.builtin.template:
+    src: registries.yaml.j2
+    dest: /etc/rancher/rke2/registries.yaml
+    mode: '0600'
+  when: registry_enabled
+  no_log: true
+
+- name: Render local RKE2 server configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/rke2/config.yaml
+    mode: '0600'
+  no_log: true
+
+- name: Install the pinned RKE2 server from verified binary artifacts
+  ansible.builtin.command: "sh {{ rke2_install_script }}"
+  environment:
+    INSTALL_RKE2_VERSION: "{{ rke2_management_version }}"
+    INSTALL_RKE2_TYPE: server
+    INSTALL_RKE2_METHOD: "{{ rke2_install_method }}"
+    INSTALL_RKE2_ARTIFACT_PATH: "{{ rke2_artifact_path }}"
+  when: existing_rke2_version.rc != 0
+  no_log: true
+
+- name: Configure the root login environment for RKE2 tools
+  ansible.builtin.copy:
+    dest: /etc/profile.d/rke2.sh
+    mode: '0644'
+    content: |
+      export PATH="$PATH:/var/lib/rancher/rke2/bin"
+      export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+  when: rke2_configure_shell_profile
+
+- name: Configure crictl for the RKE2 containerd endpoint
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    mode: '0644'
+    content: |
+      runtime-endpoint: unix:///run/k3s/containerd/containerd.sock
+      image-endpoint: unix:///run/k3s/containerd/containerd.sock
+      timeout: 1
+      debug: false
+      pull-image-on-create: false
+      disable-pull-on-run: false
+
+- name: Enable and start the local RKE2 server
+  ansible.builtin.systemd:
+    name: rke2-server.service
+    enabled: true
+    state: started
+
+- name: Wait for the local Kubernetes API
+  ansible.builtin.command: >-
+    /var/lib/rancher/rke2/bin/kubectl get --raw=/readyz
+    --kubeconfig /etc/rancher/rke2/rke2.yaml
+  register: rke2_ready
+  retries: 30
+  delay: 10
+  until: rke2_ready.rc == 0
+  changed_when: false
+
+- name: Verify the installed RKE2 version
+  ansible.builtin.command: /usr/local/bin/rke2 --version
+  register: installed_rke2_version
+  changed_when: false
+
+- name: Require the approved RKE2 version on every server
+  ansible.builtin.assert:
+    that: rke2_management_version in installed_rke2_version.stdout
+
+- name: Create protected kubeconfig directory on the control host
+  ansible.builtin.file:
+    path: "{{ rancher_kubeconfig | dirname }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  when: inventory_hostname == groups['management_servers'][0]
+
+- name: Fetch local RKE2 kubeconfig to the control host
+  ansible.builtin.fetch:
+    src: /etc/rancher/rke2/rke2.yaml
+    dest: "{{ rancher_kubeconfig }}"
+    flat: true
+  when: inventory_hostname == groups['management_servers'][0]
+  no_log: true
+
+- name: Point the control kubeconfig at server 1 until RancherLB is ready
+  ansible.builtin.replace:
+    path: "{{ rancher_kubeconfig }}"
+    regexp: 'server: https://127\.0\.0\.1:6443'
+    replace: "server: https://{{ rke2_bootstrap_endpoint }}:6443"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: inventory_hostname == groups['management_servers'][0]
+  no_log: true
+
+- name: Wait for every local server to report Ready after image pulls
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - >-
+        /var/lib/rancher/rke2/bin/kubectl get nodes
+        --kubeconfig /etc/rancher/rke2/rke2.yaml --no-headers |
+        awk 'NF >= 2 && $2 == "Ready" { count++ } END { exit !(count == 3) }'
+  register: rke2_ready_wait
+  retries: 30
+  delay: 20
+  until: rke2_ready_wait.rc == 0
+  changed_when: false
+  when: inventory_hostname == groups['management_servers'][-1]
+
+- name: Read all local server states after the final join
+  ansible.builtin.command: >-
+    /var/lib/rancher/rke2/bin/kubectl get nodes
+    --kubeconfig /etc/rancher/rke2/rke2.yaml --no-headers
+  register: rke2_nodes
+  changed_when: false
+  when: inventory_hostname == groups['management_servers'][-1]
+
+- name: Count Ready local servers with whitespace-safe column parsing
+  ansible.builtin.command:
+    argv:
+      - awk
+      - 'NF >= 2 && $2 == "Ready" { count++ } END { print count+0 }'
+    stdin: "{{ rke2_nodes.stdout }}"
+  register: rke2_ready_server_count
+  changed_when: false
+  when: inventory_hostname == groups['management_servers'][-1]
+
+- name: Read healthy local etcd pods after the final join
+  ansible.builtin.command: >-
+    /var/lib/rancher/rke2/bin/kubectl -n kube-system get pods
+    --kubeconfig /etc/rancher/rke2/rke2.yaml -l component=etcd
+    --field-selector=status.phase=Running --no-headers
+  register: rke2_etcd_pods
+  changed_when: false
+  when: inventory_hostname == groups['management_servers'][-1]
+
+- name: Read healthy Cilium pods after the final join
+  ansible.builtin.command: >-
+    /var/lib/rancher/rke2/bin/kubectl -n kube-system get pods
+    --kubeconfig /etc/rancher/rke2/rke2.yaml -l k8s-app=cilium
+    --field-selector=status.phase=Running --no-headers
+  register: rke2_cilium_pods
+  changed_when: false
+  when: inventory_hostname == groups['management_servers'][-1]
+
+- name: Require three Ready servers with healthy etcd and Cilium
+  ansible.builtin.assert:
+    that:
+      - rke2_nodes.stdout_lines | length == 3
+      - rke2_ready_server_count.stdout | int == 3
+      - rke2_etcd_pods.stdout_lines | length == 3
+      - rke2_cilium_pods.stdout_lines | length >= 3
+  when: inventory_hostname == groups['management_servers'][-1]

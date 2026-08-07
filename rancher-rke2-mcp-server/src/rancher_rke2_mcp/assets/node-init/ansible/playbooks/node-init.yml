@@ -1,0 +1,9 @@
+---
+- name: Initialize Rancher and RKE2 nodes
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - role: node_init
+
+

@@ -1,0 +1,4 @@
+---
+downstream_registration_command_file: "/data/rancher/automation/runs/{{ automation_run_id }}/secrets/downstream-registration-command"
+downstream_minimum_kernel: "5.8"
+downstream_registration_require_insecure_curl: true

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rancher-nodeport
+  namespace: {{ rancher_helm_namespace }}
+spec:
+  ports:
+    - name: http-80
+      port: 80
+      protocol: TCP

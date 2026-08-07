@@ -1,0 +1,32 @@
+mirrors:
+{% for hostname, mirror in registry_mirrors.items() %}
+  "{{ hostname }}":
+    endpoint:
+{% for endpoint in mirror.endpoints %}
+      - "{{ endpoint }}"
+{% endfor %}
+{% if mirror.rewrites | default({}) %}
+    rewrite:
+{% for pattern, replacement in mirror.rewrites.items() %}
+      "{{ pattern }}": "{{ replacement }}"
+{% endfor %}
+{% endif %}
+{% endfor %}
+configs:
+{% for hostname, config in registry_configs.items() %}
+{% set auth = config.auth | default({}) %}
+{% set tls = config.tls | default({}) %}
+  "{{ hostname }}":
+{% if auth.enabled | default(false) %}
+    auth:
+      username: "{{ auth.username }}"
+      password: "{{ auth.password }}"
+{% endif %}
+{% if tls.ca_file | default('') | length > 0 %}
+    tls:
+      ca_file: "{{ tls.ca_file }}"
+{% elif tls.insecure_skip_verify | default(false) %}
+    tls:
+      insecure_skip_verify: true
+{% endif %}
+{% endfor %}
