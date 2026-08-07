@@ -569,6 +569,29 @@ def test_downstream_assets_cover_required_stages() -> None:
     assert "_rancher_ca_source" in executor_source
 
 
+def test_downstream_inventory_carries_registration_vars(tmp_path: Path) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    service = make_service(tmp_path, secret_root=secret_root)
+    config = service.store.get_config(
+        service.validate_config(EXAMPLE)["data"]["config_digest"]
+    )
+    assert config is not None
+    executor = DownstreamExecutor(secret_root=str(secret_root))
+    inventory = executor._downstream_inventory(
+        config,
+        "/data/rancher/automation/runs/run-test-0001/downstream",
+    )
+    all_vars = inventory["all"]["vars"]
+    assert all_vars["automation_run_id"] == "run-test-0001"
+    assert all_vars["downstream_registration_command_file"] == (
+        "/data/rancher/automation/runs/run-test-0001/downstream/"
+        "secrets/downstream-registration-command"
+    )
+    assert all_vars["downstream_minimum_kernel"] == "5.8"
+    assert all_vars["downstream_registration_require_insecure_curl"] is True
+
+
 def test_registry_defaults_follow_edition_policy(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     validation = service.validate_config(EXAMPLE)

@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.11.3
+# Rancher/RKE2 MCP Server 0.11.4
+
+## 0.11.4 downstream registration inventory
+
+The generated downstream Ansible inventory now carries the registration
+settings (`automation_run_id`, registration-command path, minimum kernel,
+insecure-curl requirement) in `all.vars`, so the registration playbook loads
+them regardless of group_vars discovery.
 
 ## 0.11.3 component-artifact lookup matches succeeded workflows
 

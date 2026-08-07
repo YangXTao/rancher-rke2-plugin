@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.11.3",
+  "contract_version": "0.11.4",
   "server_name": "rancher-rke2",
   "tools": [
     {

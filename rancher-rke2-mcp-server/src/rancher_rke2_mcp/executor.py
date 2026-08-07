@@ -915,7 +915,7 @@ class DownstreamExecutor(RancherExecutor):
                 sftp,
                 f"{run_dir}/ansible/inventory/hosts.yml",
                 json.dumps(
-                    self._downstream_inventory(config),
+                    self._downstream_inventory(config, run_dir),
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -1086,7 +1086,9 @@ class DownstreamExecutor(RancherExecutor):
             "mirrors": mirrors,
         }
 
-    def _downstream_inventory(self, config: dict[str, Any]) -> dict[str, Any]:
+    def _downstream_inventory(
+        self, config: dict[str, Any], run_dir: str
+    ) -> dict[str, Any]:
         resolver = DockerSecretResolver(self.secret_root)
         controlplane = config["nodes"]["downstream"]["controlplane"]
         workers = config["nodes"]["downstream"]["workers"]
@@ -1112,6 +1114,16 @@ class DownstreamExecutor(RancherExecutor):
                     "ansible_become_password": resolver.resolve(
                         config["node_access"]["password_ref"]
                     ),
+                    # Registration settings live on the inventory so the playbook
+                    # always loads them, independent of group_vars discovery.
+                    "automation_run_id": run_dir.rstrip("/")
+                    .rsplit("/runs/", 1)[-1]
+                    .rsplit("/", 1)[0],
+                    "downstream_registration_command_file": (
+                        f"{run_dir}/secrets/downstream-registration-command"
+                    ),
+                    "downstream_minimum_kernel": "5.8",
+                    "downstream_registration_require_insecure_curl": True,
                 },
                 "children": {
                     "downstream_first_controlplane": {
