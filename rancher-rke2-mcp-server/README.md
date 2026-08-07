@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.11.7
+# Rancher/RKE2 MCP Server 0.11.8
+
+## 0.11.8 directly executable manual
+
+`render_runbook` now renders commands with the real configured versions,
+endpoints, paths, and container/control-host details instead of templated
+placeholders. The manual declares `RUN_ID` once and every component step is a
+command an operator can run directly. The audit also rejects angle-bracket
+placeholders so an actionable manual cannot silently fall back to a reference.
 
 ## 0.11.7 config-driven reference manual
 

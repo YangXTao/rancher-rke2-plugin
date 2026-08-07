@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.11.7",
+  "contract_version": "0.11.8",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -49,7 +49,7 @@
       "mutation": false,
       "required": ["plan_id"],
       "optional": ["format", "output_profile"],
-      "purpose": "Render an audited human-executable installation manual from an immutable plan and write the audited deliverable to the control host workspace."
+      "purpose": "Render an audited, directly executable installation manual from an immutable plan (real versions, endpoints, paths, and commands) and write the audited deliverable to the control host workspace."
     },
     {
       "name": "start_run",

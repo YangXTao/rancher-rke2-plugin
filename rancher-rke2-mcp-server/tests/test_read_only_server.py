@@ -618,6 +618,11 @@ def test_render_runbook_renders_audited_manual(tmp_path: Path) -> None:
     manual = data["manual"]
     assert "# Rancher / RKE2 部署手册" in manual
     assert plan["plan_id"] in manual
+    assert "执行环境" in manual
+    assert "export RUN_ID" in manual
+    assert "192.0.2.20" in manual
+    assert "13.1.4" in manual
+    assert "<" not in manual
     assert "docker-secret://control_host_password" in manual
     assert "回滚边界" in manual
     assert "离线文件" in manual
