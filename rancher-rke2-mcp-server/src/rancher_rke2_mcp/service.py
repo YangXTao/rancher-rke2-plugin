@@ -260,8 +260,8 @@ class ReadOnlyPlanningService:
             "plan_id": plan_id,
             "state": "PLANNED",
             "read_only": True,
-            "executable": components in (["vm"], ["node-init"], ["local-rke2"], ["rancher"], ["downstream"], ["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"]),
-            "execution_mode": "WORKFLOW" if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"]) else "COMPONENT",
+            "executable": components in (["vm"], ["node-init"], ["local-rke2"], ["rancher"], ["downstream"], ["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"]),
+            "execution_mode": "WORKFLOW" if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"]) else "COMPONENT",
             "config_digest": config_digest,
             "target_components": components,
             "created_at": _iso(created),
@@ -280,7 +280,7 @@ class ReadOnlyPlanningService:
             ],
             "approval_text": (
                 f"APPROVE WORKFLOW {plan_id}"
-                if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"])
+                if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"])
                 else f"APPROVE PLAN {plan_id}"
             ),
         }
@@ -508,13 +508,13 @@ class ReadOnlyPlanningService:
             return error
         assert plan is not None and preflight is not None and config is not None
         components = plan["target_components"]
-        if components not in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"]):
+        if components not in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"]):
             return _envelope(
                 ok=False,
                 state="UNSUPPORTED_SCOPE",
                 errors=[{
                     "path": "plan_id",
-                    "message": "start_workflow accepts exactly [vm, node-init], [vm, node-init, local-rke2], or [vm, node-init, local-rke2, rancher].",
+                    "message": "start_workflow accepts exactly [vm, node-init], [vm, node-init, local-rke2], [vm, node-init, local-rke2, rancher], or [vm, node-init, local-rke2, rancher, downstream].",
                 }],
             )
         if approval_text != plan["approval_text"]:
@@ -813,6 +813,8 @@ class ReadOnlyPlanningService:
             scopes.append(["vm", "node-init", "local-rke2"])
         if self._workflow_ready_for(["vm", "node-init", "local-rke2", "rancher"]):
             scopes.append(["vm", "node-init", "local-rke2", "rancher"])
+        if self._workflow_ready_for(["vm", "node-init", "local-rke2", "rancher", "downstream"]):
+            scopes.append(["vm", "node-init", "local-rke2", "rancher", "downstream"])
         return scopes
 
     def _workflow_ready_for(self, components: list[str]) -> bool:
@@ -915,6 +917,7 @@ class ReadOnlyPlanningService:
         node_artifact = f"{workspace}/runs/{run_id}/node-init"
         local_artifact = f"{workspace}/runs/{run_id}/local-rke2"
         rancher_artifact = f"{workspace}/runs/{run_id}/rancher"
+        downstream_artifact = f"{workspace}/runs/{run_id}/downstream"
         self._set_workflow_component(
             run_id, "vm", "RUNNING", "control_host_execution_started",
             "SSH control-host executor started for VM creation.", "WORKFLOW_STARTED",
@@ -1024,6 +1027,40 @@ class ReadOnlyPlanningService:
             self._set_workflow_component(
                 run_id, "rancher", "SUCCEEDED", "completed", "RANCHER_SUCCEEDED",
                 "RANCHER_SUCCEEDED", artifact_path=rancher_artifact,
+            )
+            run = self.store.get_run(run_id)
+            if run is None:
+                return
+        if "downstream" in run["target_components"]:
+            self._set_workflow_component(
+                run_id, "downstream", "RUNNING", "control_host_execution_started",
+                "Rancher succeeded; downstream cluster creation and node registration started.",
+                "WORKFLOW_DOWNSTREAM_STARTED",
+            )
+            try:
+                assert self.downstream_executor is not None
+                downstream_config = dict(config)
+                downstream_config["_rancher_ca_source"] = (
+                    f"{workspace}/runs/{run_id}/rancher/cert/output/cacerts.pem"
+                )
+                self.downstream_executor.execute(
+                    downstream_config, downstream_artifact
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Workflow downstream component failed for run %s", run_id
+                )
+                self._finish_workflow_failure(
+                    run_id,
+                    "downstream",
+                    "DOWNSTREAM_EXECUTION_FAILED",
+                    downstream_artifact,
+                    "Downstream cluster creation or node registration failed after Rancher succeeded.",
+                )
+                return
+            self._set_workflow_component(
+                run_id, "downstream", "SUCCEEDED", "completed", "DOWNSTREAM_SUCCEEDED",
+                "DOWNSTREAM_SUCCEEDED", artifact_path=downstream_artifact,
             )
             run = self.store.get_run(run_id)
             if run is None:

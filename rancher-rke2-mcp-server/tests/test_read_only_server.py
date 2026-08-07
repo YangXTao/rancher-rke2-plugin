@@ -89,6 +89,14 @@ class RancherWorkflowExecutor(QueuedExecutor):
         self.calls.append((config, artifact_path))
 
 
+class DownstreamWorkflowExecutor(QueuedExecutor):
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, str]] = []
+
+    def execute(self, config: object, artifact_path: str) -> None:
+        self.calls.append((config, artifact_path))
+
+
 class CapturingExecutor(QueuedExecutor):
     def __init__(self) -> None:
         self.submitted: dict[str, object] = {}
@@ -163,7 +171,7 @@ def test_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
     assert "duplicate key" in result["errors"][0]["message"]
 
 
-def test_builds_non_executable_plan_without_secrets(tmp_path: Path) -> None:
+def test_builds_full_pipeline_plan_without_secrets(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     validation = service.validate_config(EXAMPLE)
     digest = validation["data"]["config_digest"]
@@ -171,7 +179,9 @@ def test_builds_non_executable_plan_without_secrets(tmp_path: Path) -> None:
     assert result["ok"] is True
     plan = result["data"]["plan"]
     assert plan["read_only"] is True
-    assert plan["executable"] is False
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    assert plan["approval_text"].startswith("APPROVE WORKFLOW")
     assert [item["component"] for item in plan["component_plans"]] == [
         "vm",
         "node-init",
@@ -868,6 +878,64 @@ def test_workflow_runs_rancher_after_local_rke2_with_one_approval(
     assert isinstance(rancher_config, dict)
     assert rancher_config["_rancher_kubeconfig_source"].endswith(
         "/runs/" + run_id + "/kubeconfig/rke2.yaml"
+    )
+
+
+def test_workflow_runs_downstream_after_rancher_with_one_approval(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    local_executor = WorkflowExecutor()
+    rancher_executor = RancherWorkflowExecutor()
+    downstream_executor = DownstreamWorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+        local_executor=local_executor,
+        rancher_executor=rancher_executor,
+        downstream_executor=downstream_executor,
+    )
+    capabilities = service.get_capabilities()["data"]
+    assert ["vm", "node-init", "local-rke2", "rancher", "downstream"] in capabilities[
+        "workflow_execution_scopes"
+    ]
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(
+        digest, ["vm", "node-init", "local-rke2", "rancher", "downstream"]
+    )["data"]["plan"]
+    assert plan["executable"] is True
+    assert plan["execution_mode"] == "WORKFLOW"
+    assert plan["approval_text"] == f"APPROVE WORKFLOW {plan['plan_id']}"
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="vm-node-local-rancher-downstream-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    assert [
+        item["state"] for item in stored["data"]["run"]["component_states"]
+    ] == ["SUCCEEDED"] * 5
+    assert downstream_executor.calls[0][1].endswith("/downstream")
+    downstream_config = downstream_executor.calls[0][0]
+    assert isinstance(downstream_config, dict)
+    assert downstream_config["_rancher_ca_source"].endswith(
+        "/runs/" + run_id + "/rancher/cert/output/cacerts.pem"
     )
 
 

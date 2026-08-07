@@ -1,4 +1,11 @@
-# Rancher/RKE2 MCP Server 0.11.5
+# Rancher/RKE2 MCP Server 0.11.6
+
+## 0.11.6 one-approval pipeline through downstream
+
+`start_workflow` now accepts the ordered `vm -> node-init -> local-rke2 ->
+rancher -> downstream` plan with one `APPROVE WORKFLOW` text. After Rancher
+succeeds, the workflow reuses the same run's Rancher private-CA artifact and
+creates and registers the downstream custom RKE2 cluster in the same approval.
 
 ## 0.11.5 audited runbook rendering
 

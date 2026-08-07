@@ -36,12 +36,14 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
    then validate and build a fresh plan before running preflight again.
 10. If capabilities expose `start_workflow` and the plan target is exactly
    `vm`, `node-init`; `vm`, `node-init`, `local-rke2`; or `vm`, `node-init`,
-   `local-rke2`, `rancher`, prefer it. It requires the exact `APPROVE WORKFLOW <plan-id>`
+   `local-rke2`, `rancher`; or `vm`, `node-init`, `local-rke2`, `rancher`,
+   `downstream`, prefer it. It requires the exact `APPROVE WORKFLOW <plan-id>`
    text, matching current `PASSED` preflight, and a stable idempotency key. One approval
    authorizes only the immutable planned workflow: VM creation, an internal TCP/22
    readiness wait for every node, node initialization, and when selected the
    three-server Local RKE2 installation and the Rancher installation that reuses
-   that same run's Local RKE2 kubeconfig.
+   that same run's Local RKE2 kubeconfig, and the downstream cluster creation and
+   node registration that reuses that same run's Rancher private-CA artifact.
 11. If `start_workflow` is unavailable, or the target is a single component, use
    `start_run` only when capabilities report that component as executable. It requires
    the exact component-plan approval text and a stable idempotency key.
