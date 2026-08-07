@@ -616,17 +616,20 @@ def test_render_runbook_renders_audited_manual(tmp_path: Path) -> None:
     assert data["audit_findings"] == []
     assert Path(data["artifact_path"]).is_file()
     manual = data["manual"]
-    assert "# Rancher / RKE2 部署手册" in manual
+    assert "# RKE2 与 Rancher 人工安装操作手册" in manual
     assert plan["plan_id"] in manual
-    assert "执行环境" in manual
-    assert "export RUN_ID" in manual
+    assert "## 3. 控制节点 Docker 工作容器" in manual
+    assert "## 11. Rancher Web UI 手工创建下游集群" in manual
     assert "192.0.2.20" in manual
-    assert "13.1.4" in manual
-    assert "<" not in manual
+    assert "<命令>" not in manual
+    assert "{{" not in manual
     assert "docker-secret://control_host_password" in manual
-    assert "回滚边界" in manual
-    assert "离线文件" in manual
-    assert "审计结果" in manual
+    assert "审核结论: PASS" in manual
+    assert "执行位置：" in manual
+    assert "chartValues:" in manual
+    assert "mirrors:" in manual
+    assert "configs:" in manual
+    assert "rke2-server.service" in manual
     serialized = json.dumps(manual)
     assert "***REDACTED***" not in serialized
     assert '"password":' not in serialized
