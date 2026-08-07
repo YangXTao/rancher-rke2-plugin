@@ -54,6 +54,10 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
    never retry it automatically.
 14. Before declaring success, call `get_run` again and require run state
    `SUCCEEDED` plus successful required component verification.
+15. Honor `deliverables.installation_manual` after a succeeded workflow:
+   `true` means the server renders the reference manual automatically and the
+   run record carries its artifact path and audit findings; `ask` means ask the
+   user whether to render it via `render_runbook`; `false` means skip.
 
 When the user asks for help, a schema, an explanation, a plan, or status, remain
 read-only. Do not start a run unless the user explicitly authorizes execution.

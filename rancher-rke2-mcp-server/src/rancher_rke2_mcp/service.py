@@ -1068,6 +1068,7 @@ class ReadOnlyPlanningService:
         now = _iso(_now())
         run["state"] = "SUCCEEDED"
         run["updated_at"] = now
+        run["runbook"] = self._render_workflow_runbook(config, run)
         self.store.update_run(run)
         self.store.append_run_event(
             run_id, now,
@@ -1080,6 +1081,52 @@ class ReadOnlyPlanningService:
                 ],
             },
         )
+        runbook = run.get("runbook") or {}
+        if runbook.get("rendered"):
+            self.store.append_run_event(
+                run_id,
+                _iso(_now()),
+                {
+                    "type": (
+                        "WORKFLOW_RUNBOOK_RENDERED"
+                        if runbook.get("audit_passed")
+                        else "WORKFLOW_RUNBOOK_AUDIT_FAILED"
+                    ),
+                    "artifact_path": runbook.get("artifact_path", ""),
+                    "audit_findings": runbook.get("audit_findings", []),
+                    "message": (
+                        "Reference deployment manual rendered and audited."
+                        if runbook.get("audit_passed")
+                        else "Reference deployment manual rendered with unresolved audit findings."
+                    ),
+                },
+            )
+
+    def _render_workflow_runbook(
+        self, config: dict[str, Any], run: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Render the reference manual after a succeeded workflow when enabled."""
+        deliverables = config.get("deliverables") or {}
+        setting = str(deliverables.get("installation_manual", "ask")).strip().lower()
+        require_audit = bool(deliverables.get("require_audit_pass", True))
+        if setting != "true":
+            return {"rendered": False, "setting": setting}
+        outcome = self.render_runbook(run["plan_id"])
+        if not outcome.get("ok"):
+            return {
+                "rendered": False,
+                "setting": setting,
+                "error": outcome.get("state"),
+            }
+        data = outcome["data"]
+        findings = list(data.get("audit_findings", []))
+        return {
+            "rendered": True,
+            "setting": setting,
+            "artifact_path": data["artifact_path"],
+            "audit_findings": findings,
+            "audit_passed": (not findings) or not require_audit,
+        }
 
     def _wait_for_workflow_nodes(self, config: dict[str, Any]) -> bool:
         deadline = time.monotonic() + WORKFLOW_NODE_READY_TIMEOUT_SECONDS

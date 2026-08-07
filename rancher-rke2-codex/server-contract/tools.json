@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.11.6",
+  "contract_version": "0.11.7",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -61,7 +61,7 @@
       "name": "start_workflow",
       "mutation": true,
       "required": ["plan_id", "config_digest", "preflight_id", "approval_text", "idempotency_key"],
-      "purpose": "Validate one exact VM-to-node-init, VM-to-Local-RKE2, VM-to-Rancher, or VM-to-downstream workflow approval, create VMs, wait for every node TCP/22 readiness, initialize nodes, install the three-server Local RKE2 cluster when selected, install Rancher when selected (reusing the same run's Local RKE2 kubeconfig), and create/register the downstream custom cluster when selected (reusing the same run's Rancher private-CA artifact). Stops on failure and never retries automatically."
+      "purpose": "Validate one exact VM-to-node-init, VM-to-Local-RKE2, VM-to-Rancher, or VM-to-downstream workflow approval, create VMs, wait for every node TCP/22 readiness, initialize nodes, install the three-server Local RKE2 cluster when selected, install Rancher when selected (reusing the same run's Local RKE2 kubeconfig), and create/register the downstream custom cluster when selected (reusing the same run's Rancher private-CA artifact). When deliverables.installation_manual is true it also renders and audits the reference deployment manual. Stops on failure and never retries automatically."
     },
     {
       "name": "get_run",

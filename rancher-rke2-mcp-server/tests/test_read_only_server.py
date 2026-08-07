@@ -884,6 +884,8 @@ def test_workflow_runs_rancher_after_local_rke2_with_one_approval(
 def test_workflow_runs_downstream_after_rancher_with_one_approval(
     tmp_path: Path,
 ) -> None:
+    import yaml
+
     secret_root = tmp_path / "secrets"
     write_required_secrets(secret_root)
     vm_executor = WorkflowExecutor()
@@ -904,7 +906,10 @@ def test_workflow_runs_downstream_after_rancher_with_one_approval(
     assert ["vm", "node-init", "local-rke2", "rancher", "downstream"] in capabilities[
         "workflow_execution_scopes"
     ]
-    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    data = yaml.safe_load(EXAMPLE)
+    data["deliverables"]["installation_manual"] = "true"
+    config_yaml = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    digest = service.validate_config(config_yaml)["data"]["config_digest"]
     plan = service.build_plan(
         digest, ["vm", "node-init", "local-rke2", "rancher", "downstream"]
     )["data"]["plan"]
@@ -937,6 +942,52 @@ def test_workflow_runs_downstream_after_rancher_with_one_approval(
     assert downstream_config["_rancher_ca_source"].endswith(
         "/runs/" + run_id + "/rancher/cert/output/cacerts.pem"
     )
+    runbook = stored["data"]["run"].get("runbook") or {}
+    assert runbook.get("rendered") is True
+    assert runbook.get("audit_passed") is True
+    assert Path(runbook["artifact_path"]).is_file()
+
+
+def test_workflow_skips_runbook_when_installation_manual_is_ask(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    data = yaml.safe_load(EXAMPLE)
+    data["deliverables"]["installation_manual"] = "ask"
+    ask_yaml = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    vm_executor = WorkflowExecutor()
+    node_executor = WorkflowExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        executor=vm_executor,
+        node_executor=node_executor,
+    )
+    digest = service.validate_config(ask_yaml)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["vm", "node-init"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+    with patch.object(service, "_wait_for_workflow_nodes", return_value=True):
+        result = service.start_workflow(
+            plan_id=plan["plan_id"],
+            config_digest=digest,
+            preflight_id=preflight["preflight_id"],
+            approval_text=plan["approval_text"],
+            idempotency_key="ask-runbook-workflow-001",
+        )
+        run_id = result["data"]["run"]["run_id"]
+        deadline = time.monotonic() + 1
+        stored = service.get_run(run_id)
+        while stored["state"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            stored = service.get_run(run_id)
+    assert stored["state"] == "SUCCEEDED"
+    runbook = stored["data"]["run"].get("runbook") or {}
+    assert runbook.get("rendered") is False
+    assert runbook.get("setting") == "ask"
 
 
 def test_local_rke2_assets_guard_against_an_empty_inventory() -> None:

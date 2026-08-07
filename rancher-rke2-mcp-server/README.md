@@ -1,4 +1,12 @@
-# Rancher/RKE2 MCP Server 0.11.6
+# Rancher/RKE2 MCP Server 0.11.7
+
+## 0.11.7 config-driven reference manual
+
+After a succeeded workflow, `deliverables.installation_manual` controls the
+reference manual: `true` renders and audits it automatically and records the
+artifact path and audit findings on the run; `ask` leaves it to the client;
+`false` skips it. `require_audit_pass` marks the manual as not passed when
+audit findings remain.
 
 ## 0.11.6 one-approval pipeline through downstream
 
