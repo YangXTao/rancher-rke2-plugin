@@ -224,7 +224,7 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
             assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
-            assert len(names) == 11
+            assert len(names) == 12
             by_name = {tool.name: tool for tool in response.tools}
             for name in READ_ONLY_TOOLS:
                 annotations = by_name[name].annotations
@@ -590,6 +590,45 @@ def test_downstream_inventory_carries_registration_vars(tmp_path: Path) -> None:
     )
     assert all_vars["downstream_minimum_kernel"] == "5.8"
     assert all_vars["downstream_registration_require_insecure_curl"] is True
+
+
+def test_render_runbook_renders_audited_manual(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+
+    result = service.render_runbook(plan["plan_id"])
+    assert result["ok"] is True
+    assert result["state"] == "RENDERED"
+    data = result["data"]
+    assert data["format"] == "markdown"
+    assert data["output_profile"] == "human-step-by-step"
+    assert data["audit_findings"] == []
+    assert Path(data["artifact_path"]).is_file()
+    manual = data["manual"]
+    assert "# Rancher / RKE2 部署手册" in manual
+    assert plan["plan_id"] in manual
+    assert "docker-secret://control_host_password" in manual
+    assert "回滚边界" in manual
+    assert "离线文件" in manual
+    assert "审计结果" in manual
+    serialized = json.dumps(manual)
+    assert "***REDACTED***" not in serialized
+    assert '"password":' not in serialized
+
+
+def test_render_runbook_validates_inputs(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+
+    invalid_format = service.render_runbook(plan["plan_id"], format="html")
+    assert invalid_format["ok"] is False
+    assert invalid_format["state"] == "INVALID"
+
+    missing = service.render_runbook("plan-does-not-exist")
+    assert missing["ok"] is False
+    assert missing["state"] == "NOT_FOUND"
 
 
 def test_registry_defaults_follow_edition_policy(tmp_path: Path) -> None:

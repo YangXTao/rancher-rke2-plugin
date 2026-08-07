@@ -22,6 +22,11 @@ from .constants import (
     SERVER_VERSION,
 )
 from .preflight import NonMutatingPreflight
+from .runbook import (
+    SUPPORTED_FORMATS,
+    SUPPORTED_OUTPUT_PROFILES,
+    render as render_runbook_manual,
+)
 from .executor import (
     DownstreamExecutor,
     ExecutionResult,
@@ -374,6 +379,84 @@ class ReadOnlyPlanningService:
         state = "EXPIRED" if expires <= _now() else preflight["state"]
         return _envelope(
             ok=state == "PASSED", state=state, data={"preflight": preflight}
+        )
+
+    def render_runbook(
+        self,
+        plan_id: str,
+        format: str = "markdown",
+        output_profile: str = "human-step-by-step",
+    ) -> dict[str, Any]:
+        """Render an audited human-executable manual from an immutable plan."""
+        if format not in SUPPORTED_FORMATS:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[{"path": "format", "message": f"unsupported format: {format}"}],
+            )
+        if output_profile not in SUPPORTED_OUTPUT_PROFILES:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "output_profile",
+                        "message": f"unsupported output_profile: {output_profile}",
+                    }
+                ],
+            )
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        expires = datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00"))
+        if expires <= _now():
+            return _envelope(
+                ok=False,
+                state="EXPIRED",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "Plan has expired; validate configuration and build a new plan.",
+                    }
+                ],
+            )
+        config = self.store.get_config(plan["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The configuration associated with this plan is unavailable.",
+                    }
+                ],
+            )
+        manual, findings = render_runbook_manual(
+            plan,
+            config,
+            format=format,
+            output_profile=output_profile,
+        )
+        manual_dir = self.store.path.parent / "manuals"
+        manual_dir.mkdir(parents=True, exist_ok=True)
+        artifact = manual_dir / f"{plan_id}.md"
+        artifact.write_text(manual, encoding="utf-8")
+        return _envelope(
+            ok=not findings,
+            state="RENDERED" if not findings else "RENDERED_WITH_FINDINGS",
+            data={
+                "plan_id": plan_id,
+                "format": format,
+                "output_profile": output_profile,
+                "artifact_path": str(artifact),
+                "audit_findings": findings,
+                "manual": manual,
+            },
         )
 
     def start_workflow(

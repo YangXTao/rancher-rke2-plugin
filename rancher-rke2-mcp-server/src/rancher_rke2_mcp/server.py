@@ -133,6 +133,19 @@ def create_server(
         """Read a previously generated non-mutating preflight result."""
         return service.get_preflight(preflight_id)
 
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    def render_runbook(
+        plan_id: str,
+        format: str = "markdown",
+        output_profile: str = "human-step-by-step",
+    ) -> dict[str, Any]:
+        """Render an audited human-executable installation manual from a plan."""
+        return service.render_runbook(
+            plan_id,
+            format=format,
+            output_profile=output_profile,
+        )
+
     @server.tool(annotations=MUTATION_TOOL_ANNOTATIONS)
     def start_run(
         plan_id: str,

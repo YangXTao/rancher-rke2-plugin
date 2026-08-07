@@ -1,4 +1,14 @@
-# Rancher/RKE2 MCP Server 0.11.4
+# Rancher/RKE2 MCP Server 0.11.5
+
+## 0.11.5 audited runbook rendering
+
+`render_runbook` renders a human-executable installation manual from an
+immutable plan (markdown, `human-step-by-step` profile). The manual includes
+the plan scope, topology, secret names only, per-component ordered steps with
+expected outputs and verification commands, rollback boundaries, offline
+files, and an audit section that flags placeholders or plaintext credentials.
+The deliverable is written under the server data directory and returned with
+its artifact path and any unresolved audit findings.
 
 ## 0.11.4 downstream registration inventory
 

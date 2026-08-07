@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.11.4",
+  "contract_version": "0.11.5",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -43,6 +43,13 @@
       "mutation": false,
       "required": ["preflight_id"],
       "purpose": "Read a persisted non-mutating preflight result while its associated plan remains valid."
+    },
+    {
+      "name": "render_runbook",
+      "mutation": false,
+      "required": ["plan_id"],
+      "optional": ["format", "output_profile"],
+      "purpose": "Render an audited human-executable installation manual from an immutable plan and write the audited deliverable to the control host workspace."
     },
     {
       "name": "start_run",
