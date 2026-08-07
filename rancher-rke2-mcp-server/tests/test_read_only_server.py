@@ -225,6 +225,19 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
             names = tuple(tool.name for tool in response.tools)
             assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
             assert len(names) == 11
+            by_name = {tool.name: tool for tool in response.tools}
+            for name in READ_ONLY_TOOLS:
+                annotations = by_name[name].annotations
+                assert annotations is not None
+                assert annotations.read_only_hint is True
+                assert annotations.destructive_hint is False
+                assert annotations.idempotent_hint is True
+            for name in MUTATION_TOOLS:
+                annotations = by_name[name].annotations
+                assert annotations is not None
+                assert annotations.read_only_hint is False
+                assert annotations.destructive_hint is True
+                assert annotations.idempotent_hint is True
             capability = await client.call_tool("get_capabilities", {})
             assert capability.structured_content["ok"] is True
             assert capability.structured_content["data"]["mutation_tools"] == [

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 import uvicorn
 
 from .auth import StaticBearerAuthMiddleware
@@ -19,6 +20,21 @@ from .executor import (
 from .secrets import read_secret_setting
 from .service import ReadOnlyPlanningService
 from .storage import SQLiteStore
+
+
+READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
+    "read_only_hint": True,
+    "destructive_hint": False,
+    "idempotent_hint": True,
+    "open_world_hint": False,
+}
+
+MUTATION_TOOL_ANNOTATIONS: ToolAnnotations = {
+    "read_only_hint": False,
+    "destructive_hint": True,
+    "idempotent_hint": True,
+    "open_world_hint": False,
+}
 
 
 def create_server(
@@ -79,22 +95,22 @@ def create_server(
         version=SERVER_VERSION,
     )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def get_capabilities() -> dict[str, Any]:
         """Return versions, components, tools, and the enforced read-only boundary."""
         return service.get_capabilities()
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def get_config_schema() -> dict[str, Any]:
         """Return the JSON Schema used to validate Rancher/RKE2 YAML."""
         return service.get_config_schema()
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def validate_config(config: str | dict[str, Any]) -> dict[str, Any]:
         """Validate a YAML string or parsed object and return a redacted preview."""
         return service.validate_config(config)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def build_plan(
         config_digest: str,
         target_components: list[str],
@@ -102,22 +118,22 @@ def create_server(
         """Create and persist a deployment plan; supported component and workflow plans are executable."""
         return service.build_plan(config_digest, target_components)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def get_plan(plan_id: str) -> dict[str, Any]:
         """Read a previously generated non-executable plan."""
         return service.get_plan(plan_id)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def preflight_plan(plan_id: str) -> dict[str, Any]:
         """Check mounted Secret availability and endpoint TCP reachability without changes."""
         return service.preflight_plan(plan_id)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def get_preflight(preflight_id: str) -> dict[str, Any]:
         """Read a previously generated non-mutating preflight result."""
         return service.get_preflight(preflight_id)
 
-    @server.tool()
+    @server.tool(annotations=MUTATION_TOOL_ANNOTATIONS)
     def start_run(
         plan_id: str,
         config_digest: str,
@@ -134,7 +150,7 @@ def create_server(
             idempotency_key=idempotency_key,
         )
 
-    @server.tool()
+    @server.tool(annotations=MUTATION_TOOL_ANNOTATIONS)
     def start_workflow(
         plan_id: str,
         config_digest: str,
@@ -151,12 +167,12 @@ def create_server(
             idempotency_key=idempotency_key,
         )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def get_run(run_id: str) -> dict[str, Any]:
         """Read a persisted approval-gated run."""
         return service.get_run(run_id)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     def get_run_events(
         run_id: str, after_cursor: str | None = None, limit: int = 100
     ) -> dict[str, Any]:

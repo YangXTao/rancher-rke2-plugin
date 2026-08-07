@@ -1,4 +1,14 @@
-# Rancher/RKE2 MCP Server 0.11.0
+# Rancher/RKE2 MCP Server 0.11.1
+
+## 0.11.1 MCP tool annotations
+
+Every registered tool now carries MCP `annotations`. The nine read-only tools
+(`get_capabilities`, `get_config_schema`, `validate_config`, `build_plan`,
+`get_plan`, `preflight_plan`, `get_preflight`, `get_run`, `get_run_events`) are
+marked `readOnlyHint: true`; `start_run` and `start_workflow` are marked
+`destructiveHint: true` with `readOnlyHint: false`. This lets annotation-driven
+clients (such as current Codex desktop) distinguish read-only calls from
+infrastructure mutations.
 
 ## 0.11.0 downstream custom cluster execution
 
