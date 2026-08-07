@@ -474,6 +474,7 @@ def test_registry_defaults_follow_edition_policy(tmp_path: Path) -> None:
     }
     assert downstream_mirrors["docker.io"]["rewrites"] == {}
     assert "registry.rancher.cn" in downstream_mirrors
+    assert downstream_mirrors["registry.rancher.cn"]["rewrites"] == {}
     assert "registry.rancher.com" not in downstream_mirrors
 
     local_vars = local._local_group_vars(
@@ -483,6 +484,7 @@ def test_registry_defaults_follow_edition_policy(tmp_path: Path) -> None:
     local_mirrors = local_vars["registry_mirrors"]
     assert local_mirrors["docker.io"]["rewrites"] == {}
     assert "registry.rancher.cn" in local_mirrors
+    assert local_mirrors["registry.rancher.cn"]["rewrites"] == {}
     assert "registry.rancher.com" not in local_mirrors
 
     non_ent = dict(config)
@@ -494,6 +496,50 @@ def test_registry_defaults_follow_edition_policy(tmp_path: Path) -> None:
     }
     assert "registry.rancher.com" in standard_mirrors
     assert "registry.rancher.cn" not in standard_mirrors
+    assert standard_mirrors["registry.rancher.com"]["rewrites"] == {
+        "(^.+$)": "registry.rancher.com/$1"
+    }
+
+
+def test_validate_config_returns_effective_config_with_defaults_expanded(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    data = yaml.safe_load(EXAMPLE)
+    data["downstream_cluster"].pop("rke_config", None)
+    data["downstream_cluster"].pop("registries", None)
+    data["local_rke2"].pop("registry", None)
+    data["registry"]["username"] = "admin"
+    data["registry"]["password_ref"] = "docker-secret://registry_password"
+    minimal = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+
+    result = make_service(tmp_path).validate_config(minimal)
+    assert result["ok"] is True
+    effective = result["data"]["effective_config"]
+    assert isinstance(effective, dict)
+
+    downstream = effective["downstream_cluster"]
+    rke_config = downstream["rke_config"]
+    assert rke_config["machinePools"] is None
+    assert rke_config["chartValues"]["rke2-cilium"]["kubeProxyReplacement"] is True
+    registries = downstream["registries"]
+    assert registries["enabled"] is True
+    mirror_map = {item["hostname"]: item for item in registries["mirrors"]}
+    assert mirror_map["docker.io"]["rewrites"] == {}
+    assert mirror_map["registry.rancher.cn"]["rewrites"] == {}
+
+    local_registry = effective["local_rke2"]["registry"]
+    local_mirrors = local_registry["mirrors"]
+    assert local_mirrors["docker.io"]["rewrites"] == {}
+    assert local_mirrors["registry.rancher.cn"]["rewrites"] == {}
+    harbor_config = local_registry["configs"]["registry.example.internal"]
+    assert harbor_config["auth"]["enabled"] is True
+    assert harbor_config["auth"]["password_ref"] == "docker-secret://registry_password"
+
+    serialized = json.dumps(effective, ensure_ascii=False)
+    assert "docker-secret://registry_password" in serialized
+    assert '"password":' not in serialized
 
 
 def test_executor_start_persists_running_state(tmp_path: Path) -> None:

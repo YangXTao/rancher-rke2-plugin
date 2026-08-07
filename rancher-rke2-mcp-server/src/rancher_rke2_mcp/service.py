@@ -29,6 +29,7 @@ from .executor import (
     NodeInitExecutor,
     RancherExecutor,
     VmExecutor,
+    _default_registry_mirrors,
 )
 from .secrets import DockerSecretResolver
 from .storage import SQLiteStore
@@ -70,6 +71,52 @@ def _envelope(
         "errors": errors or [],
         "artifacts": [],
     }
+
+
+def _effective_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the normalized configuration with execution defaults expanded.
+
+    Downstream ``rke_config``/``registries`` and Local RKE2 registry
+    ``mirrors``/``configs`` are filled from the reference defaults when omitted,
+    so the user sees the exact settings the executors will apply. Secret values
+    are never resolved; only ``docker-secret`` references and public values are
+    returned.
+    """
+    result = dict(config)
+    downstream = dict(result.get("downstream_cluster", {}))
+    if not downstream.get("rke_config"):
+        downstream["rke_config"] = DownstreamExecutor._default_downstream_rke_config()
+    if not downstream.get("registries"):
+        downstream["registries"] = DownstreamExecutor._default_downstream_registries(
+            config
+        )
+    result["downstream_cluster"] = downstream
+
+    local = dict(result.get("local_rke2", {}))
+    local_registry = dict(local.get("registry", {}))
+    if "mirrors" not in local_registry:
+        local_registry["mirrors"] = _default_registry_mirrors(config)
+    if "configs" not in local_registry:
+        registry = config["registry"]
+        auth_enabled = bool(registry.get("username") and registry.get("password_ref"))
+        local_registry["configs"] = {
+            str(registry["hostname"]): {
+                "auth": {
+                    "enabled": auth_enabled,
+                    "username": registry.get("username") or "",
+                    "password_ref": registry.get("password_ref") or "",
+                },
+                "tls": {
+                    "insecure_skip_verify": bool(
+                        registry.get("insecure_skip_verify", False)
+                    ),
+                    "ca_file": "",
+                },
+            }
+        }
+    local["registry"] = local_registry
+    result["local_rke2"] = local
+    return result
 
 
 class ReadOnlyPlanningService:
@@ -167,6 +214,7 @@ class ReadOnlyPlanningService:
                 "config_digest": outcome.config_digest,
                 "validated_at": created_at,
                 "redacted_preview": outcome.redacted_preview,
+                "effective_config": _effective_config(outcome.normalized),
             },
             warnings=outcome.warnings,
         )

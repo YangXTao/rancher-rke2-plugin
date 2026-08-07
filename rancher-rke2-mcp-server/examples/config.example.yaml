@@ -203,7 +203,7 @@ downstream_cluster:
       - {hostname: k8s.gcr.io, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.k8s.io/$1"}}
       - {hostname: quay.io, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "quay.io/$1"}}
       - {hostname: registry.k8s.io, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.k8s.io/$1"}}
-      - {hostname: registry.rancher.cn, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.rancher.cn/$1"}}
+      - {hostname: registry.rancher.cn, endpoints: ["https://registry.example.internal"], rewrites: {}}
       - {hostname: registry.suse.com, endpoints: ["https://registry.example.internal"], rewrites: {"(^.+$)": "registry.suse.com/$1"}}
 
 deliverables:

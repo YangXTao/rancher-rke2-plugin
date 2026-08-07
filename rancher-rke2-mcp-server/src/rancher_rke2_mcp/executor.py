@@ -28,6 +28,11 @@ def _default_registry_mirrors(config: dict[str, Any]) -> dict[str, Any]:
         if str(config["versions"]["rancher"]).endswith("-ent")
         else "registry.rancher.com"
     )
+    # registry.rancher.cn is proxied without rewrites by the reference Harbor
+    # mirror policy; the non-enterprise registry.rancher.com keeps its rewrite.
+    rancher_rewrite_target = (
+        None if rancher_domain == "registry.rancher.cn" else rancher_domain
+    )
     rewrite_targets: dict[str, str | None] = {
         "docker.io": None,
         "dp.apps.rancher.io": "dp.apps.rancher.io",
@@ -35,7 +40,7 @@ def _default_registry_mirrors(config: dict[str, Any]) -> dict[str, Any]:
         "k8s.gcr.io": "registry.k8s.io",
         "quay.io": "quay.io",
         "registry.k8s.io": "registry.k8s.io",
-        rancher_domain: rancher_domain,
+        rancher_domain: rancher_rewrite_target,
         "registry.suse.com": "registry.suse.com",
     }
     mirrors: dict[str, dict[str, Any]] = {}

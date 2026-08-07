@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.11.1",
+  "contract_version": "0.11.2",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -18,7 +18,7 @@
       "name": "validate_config",
       "mutation": false,
       "required": ["config"],
-      "purpose": "Validate and normalize configuration; return config_digest and a redacted preview."
+      "purpose": "Validate and normalize configuration; return config_digest, a redacted preview, and the effective_config with execution defaults expanded."
     },
     {
       "name": "build_plan",

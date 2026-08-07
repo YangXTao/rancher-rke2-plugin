@@ -1,4 +1,16 @@
-# Rancher/RKE2 MCP Server 0.11.1
+# Rancher/RKE2 MCP Server 0.11.2
+
+## 0.11.2 effective config and registry.rancher.cn mirror policy
+
+`validate_config` now returns `effective_config`: the complete normalized
+configuration with execution defaults expanded (downstream `rke_config` and
+`registries`, Local RKE2 registry `mirrors`/`configs`). Approval presentation
+should show it so the user sees the exact final settings. Secret values are
+never resolved; only `docker-secret` references and public values are returned.
+
+The reference Harbor mirror set now proxies `registry.rancher.cn` without
+rewrites (Local RKE2 and downstream alike); non-enterprise
+`registry.rancher.com` keeps its rewrite.
 
 ## 0.11.1 MCP tool annotations
 
