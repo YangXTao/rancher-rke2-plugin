@@ -1,4 +1,10 @@
-# Rancher/RKE2 MCP Server 0.11.8
+# Rancher/RKE2 MCP Server 0.11.9
+
+## 0.11.9 defer RancherLB preflight for VM plans
+
+The RancherLB HTTPS TCP check is now reported as `SKIPPED` when the plan also
+creates VMs, because the RancherLB is an intended resource rebuilt by the
+Rancher stage of the run. Downstream-only plans still require the check.
 
 ## 0.11.8 directly executable manual
 
