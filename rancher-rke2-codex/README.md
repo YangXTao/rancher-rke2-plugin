@@ -9,6 +9,10 @@ with the complete `downstream_cluster.rkeConfig` and `registries`, and
 registers every custom node in the approved role order (first control-plane and
 first worker together, then remaining control-planes, then remaining workers).
 
+`start_workflow` now also accepts the ordered `vm` -> `node-init` ->
+`local-rke2` -> `rancher` plan with one approval; after Local RKE2 succeeds it
+reuses the same run's kubeconfig and installs Rancher in the same workflow.
+
 ## 0.9.9 NodePort verification target
 
 ## 0.9.9 NodePort verification target

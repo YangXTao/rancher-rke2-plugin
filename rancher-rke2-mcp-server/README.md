@@ -13,6 +13,12 @@ Rancher API token handling, `rancher2_cluster_v2` creation with the complete
 then remaining workers). A downstream plan also preflights the RancherLB HTTPS
 endpoint. Every configured node must report Ready before the run succeeds.
 
+`start_workflow` now also accepts the ordered `vm` -> `node-init` ->
+`local-rke2` -> `rancher` plan with one `APPROVE WORKFLOW` text. After Local
+RKE2 succeeds, the workflow reuses the same run's kubeconfig artifact and
+installs Rancher in the same approval, so the full management cluster can be
+built without a per-stage approval.
+
 ## 0.9.9 NodePort verification target
 
 ## 0.9.9 NodePort verification target
