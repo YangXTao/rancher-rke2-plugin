@@ -8,7 +8,7 @@
       "name": "rancher-rke2-codex",
       "source": {
         "source": "local",
-        "path": "./plugins/rancher-rke2-codex"
+        "path": "./.agents/plugins/plugins/rancher-rke2-codex"
       },
       "policy": {
         "installation": "AVAILABLE",
