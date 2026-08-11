@@ -192,11 +192,14 @@ class SQLiteStore:
     def latest_succeeded_component_run(
         self, config_digest: str, component: str
     ) -> dict[str, Any] | None:
-        """Return the newest successful run containing the component.
+        """Return the newest run in which the component itself succeeded.
 
-        A component can succeed either as a standalone single-component run or
-        as one stage of a succeeded workflow, so the lookup matches both the
-        run state and the persisted component state.
+        A component can succeed as a standalone single-component run or as one
+        stage of a workflow.  A workflow may finish FAILED because a later
+        stage failed while an earlier stage (for example Rancher before
+        downstream) already produced durable, reusable artifacts.  The lookup
+        therefore trusts the persisted component state, not the overall run
+        state.
         """
         with self._connect() as connection:
             rows = connection.execute(
@@ -207,18 +210,16 @@ class SQLiteStore:
                 """,
                 (config_digest,),
             ).fetchall()
-        for row in rows:
-            run = json.loads(row["run_json"])
-            if run.get("state") != "SUCCEEDED":
-                continue
-            if component not in run.get("target_components", []):
-                continue
-            states = {
-                item.get("component"): item.get("state")
-                for item in run.get("component_states", [])
-            }
-            if states.get(component) == "SUCCEEDED":
-                return run
+            for row in rows:
+                run = json.loads(row["run_json"])
+                if component not in run.get("target_components", []):
+                    continue
+                states = {
+                    item.get("component"): item.get("state")
+                    for item in run.get("component_states", [])
+                }
+                if states.get(component) == "SUCCEEDED":
+                    return run
         return None
 
     def update_run(self, run: dict[str, Any]) -> None:

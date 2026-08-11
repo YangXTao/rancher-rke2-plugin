@@ -484,6 +484,59 @@ def test_start_run_downstream_reuses_rancher_artifact_from_workflow(
     )
 
 
+def test_start_run_downstream_reuses_rancher_artifact_from_failed_workflow(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    downstream_executor = CapturingExecutor()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        downstream_executor=downstream_executor,
+    )
+    digest = service.validate_config(EXAMPLE)["data"]["config_digest"]
+    service.store.save_run(
+        {
+            "run_id": "run-workflow-rancher-ok-downstream-fail",
+            "state": "FAILED",
+            "plan_id": "plan-workflow-failed-seed",
+            "config_digest": digest,
+            "preflight_id": "preflight-workflow-failed-seed",
+            "target_components": ["vm", "node-init", "local-rke2", "rancher", "downstream"],
+            "created_at": "2026-08-06T00:00:00Z",
+            "updated_at": "2026-08-06T00:00:00Z",
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {"component": "vm", "state": "SUCCEEDED"},
+                {"component": "node-init", "state": "SUCCEEDED"},
+                {"component": "local-rke2", "state": "SUCCEEDED"},
+                {"component": "rancher", "state": "SUCCEEDED"},
+                {"component": "downstream", "state": "FAILED"},
+            ],
+        }
+    )
+    plan = service.build_plan(digest, ["downstream"])["data"]["plan"]
+    with patch("rancher_rke2_mcp.preflight.socket.create_connection"):
+        preflight = service.preflight_plan(plan["plan_id"])["data"]["preflight"]
+
+    result = service.start_run(
+        plan_id=plan["plan_id"],
+        config_digest=digest,
+        preflight_id=preflight["preflight_id"],
+        approval_text=plan["approval_text"],
+        idempotency_key="downstream-from-failed-workflow",
+    )
+    assert result["ok"] is True
+    assert result["state"] == "QUEUED"
+    submitted_config = downstream_executor.submitted["config"]
+    assert isinstance(submitted_config, dict)
+    assert submitted_config["_rancher_ca_source"] == (
+        "/data/rancher/automation/runs/run-workflow-rancher-ok-downstream-fail/"
+        "rancher/cert/output/cacerts.pem"
+    )
+
+
 def test_start_run_rancher_reuses_local_rke2_artifact_from_workflow(
     tmp_path: Path,
 ) -> None:
