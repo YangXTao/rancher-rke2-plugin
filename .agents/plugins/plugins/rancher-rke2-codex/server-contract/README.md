@@ -1,19 +1,23 @@
-# Rancher/RKE2 MCP Server Contract 0.9.9
+# Rancher/RKE2 MCP Server Contract 0.11.16
 
 ## Implemented execution boundary
 
-Server 0.9.9 provides `preflight_plan`, `get_preflight`, `start_run`,
-`start_workflow`, `get_run`, and `get_run_events`. Preflight resolves mounted
+Server 0.11.16 provides `preflight_plan`, `get_preflight`, `start_run`,
+`start_workflow`, `get_run`, `get_run_events`, and `collect_diagnostics`.
+Runtime diagnostics authenticate to the declared control host but execute only
+fixed read-only evidence commands; returned log tails and process metadata are
+bounded and credential-redacted. Preflight resolves mounted
 Secret availability and performs TCP reachability tests only. If a plan includes
 `vm`, intended node SSH endpoints are correctly reported as `SKIPPED`; vCenter,
 registry, proxy, and control-host TCP checks remain required.
 
-`start_run` executes one approved component (`vm`, `node-init`, `local-rke2`, or
-`rancher`). Rancher requires a successful `local-rke2` component run with the
+`start_run` executes one approved component (`vm`, `node-init`, `local-rke2`,
+`rancher`, or `downstream`). Rancher requires a successful `local-rke2` component run with the
 same configuration digest; its kubeconfig is reused from that durable run
 artifact without being added to configuration or persisted in SQLite.
-`start_workflow` executes only an immutable ordered `vm` → `node-init` or
-`vm` → `node-init` → `local-rke2` plan. Both require exact approval text, the
+`start_workflow` executes only an immutable ordered prefix from `vm` →
+`node-init` through `local-rke2`, `rancher`, or `downstream`. Both mutation
+paths require exact approval text, the
 matching digest, a current `PASSED` preflight, and an idempotency key. Execution
 runs through the SSH control host and its persistent control container; secrets are
 resolved only there and are never returned or persisted in server state.
@@ -62,7 +66,7 @@ Skill只决定调用顺序和用户解释，不得绕过MCP Server直接执行�
 
 ## 当前实现边界
 
-Server 0.4.0已实现：
+Server 0.11.16已实现：
 
 ```text
 get_capabilities
@@ -73,8 +77,11 @@ get_plan
 preflight_plan
 get_preflight
 start_run
+start_workflow
 get_run
 get_run_events
+collect_diagnostics
 ```
 
-这些工具不会探测或修改vSphere、Linux、Kubernetes、Rancher或Harbor。
+`collect_diagnostics` 会认证到控制机读取固定白名单证据，但不会修改
+vSphere、Linux、Kubernetes、Rancher或Harbor；preflight仍只做Secret和TCP检查。

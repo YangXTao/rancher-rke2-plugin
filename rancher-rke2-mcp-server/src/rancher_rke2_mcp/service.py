@@ -22,6 +22,8 @@ from .constants import (
     SERVER_VERSION,
 )
 from .preflight import NonMutatingPreflight
+from .diagnostics import DIAGNOSTIC_DEPTHS, DiagnosticsCollector
+from .redaction import redact_diagnostic_payload
 from .runbook import (
     SUPPORTED_FORMATS,
     SUPPORTED_OUTPUT_PROFILES,
@@ -136,6 +138,7 @@ class ReadOnlyPlanningService:
         local_executor: LocalRke2Executor | None = None,
         rancher_executor: RancherExecutor | None = None,
         downstream_executor: DownstreamExecutor | None = None,
+        diagnostics_collector: DiagnosticsCollector | None = None,
     ):
         self.store = store
         self.secret_root = secret_root
@@ -145,6 +148,7 @@ class ReadOnlyPlanningService:
         self.local_executor = local_executor
         self.rancher_executor = rancher_executor
         self.downstream_executor = downstream_executor
+        self.diagnostics_collector = diagnostics_collector
 
     def get_capabilities(self) -> dict[str, Any]:
         workflow_scopes = self._workflow_scopes()
@@ -175,6 +179,12 @@ class ReadOnlyPlanningService:
                 "preflight_network_checks": True,
                 "preflight_authentication_attempted": False,
                 "preflight_mutates_infrastructure": False,
+                "runtime_diagnostics": bool(
+                    self.diagnostics_collector is not None
+                    and self.diagnostics_collector.ready()
+                ),
+                "diagnostics_authentication_attempted": True,
+                "diagnostics_mutates_infrastructure": False,
                 "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor), ("local-rke2", self.local_executor), ("rancher", self.rancher_executor), ("downstream", self.downstream_executor)) if executor and executor.ready()],
                 "workflow_execution_scope": workflow_scopes[-1] if workflow_scopes else [],
                 "workflow_execution_scopes": workflow_scopes,
@@ -1323,6 +1333,148 @@ class ReadOnlyPlanningService:
                 "next_cursor": events[-1]["cursor"] if events else after_cursor,
             },
         )
+
+    def collect_diagnostics(
+        self,
+        run_id: str,
+        component: str | None = None,
+        depth: str = "standard",
+    ) -> dict[str, Any]:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "run_id", "message": "Unknown run ID."}],
+            )
+        selected_depth = str(depth).strip().lower()
+        if selected_depth not in DIAGNOSTIC_DEPTHS:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "depth",
+                        "message": "depth must be summary, standard, or deep.",
+                    }
+                ],
+            )
+        state_by_component = {
+            str(item.get("component")): item
+            for item in run.get("component_states", [])
+        }
+        if component is None:
+            selected_component = self._diagnostic_component(run)
+        else:
+            selected_component = str(component).strip().lower()
+        if selected_component not in run.get("target_components", []):
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "component",
+                        "message": "component must be one of the run target components.",
+                    }
+                ],
+            )
+        if self.diagnostics_collector is None or not self.diagnostics_collector.ready():
+            return _envelope(
+                ok=False,
+                state="UNAVAILABLE",
+                errors=[
+                    {
+                        "path": "collect_diagnostics",
+                        "message": "Runtime diagnostics are not configured on this server.",
+                    }
+                ],
+            )
+        config = self.store.get_config(run["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The run configuration is unavailable.",
+                    }
+                ],
+            )
+        component_state = state_by_component.get(selected_component, {})
+        workspace = str(config["run"]["workspace"]).rstrip("/")
+        artifact_path = str(
+            component_state.get("artifact_path")
+            or f"{workspace}/runs/{run_id}/{selected_component}"
+        )
+        try:
+            evidence = self.diagnostics_collector.collect(
+                config=config,
+                run_id=run_id,
+                component=selected_component,
+                component_state=str(component_state.get("state", "UNKNOWN")),
+                artifact_path=artifact_path,
+                depth=selected_depth,
+            )
+        except Exception:
+            LOGGER.exception("Diagnostic collection failed for run %s", run_id)
+            return _envelope(
+                ok=False,
+                state="DIAGNOSTICS_FAILED",
+                errors=[
+                    {
+                        "path": "collect_diagnostics",
+                        "message": "Read-only diagnostic collection failed.",
+                    }
+                ],
+            )
+        secret_values = self._resolve_diagnostic_secret_values(config)
+        return _envelope(
+            ok=True,
+            state="DIAGNOSTICS_AVAILABLE",
+            data={
+                "diagnostics": redact_diagnostic_payload(evidence, secret_values),
+            },
+            warnings=[
+                "Diagnostics authenticate to the declared control host but run only fixed read-only commands.",
+                "A single process snapshot cannot prove forward progress; compare repeated collections when necessary.",
+            ],
+        )
+
+    @staticmethod
+    def _diagnostic_component(run: dict[str, Any]) -> str:
+        states = list(run.get("component_states", []))
+        for desired in ("FAILED", "RUNNING", "BLOCKED"):
+            for item in states:
+                if item.get("state") == desired:
+                    return str(item["component"])
+        targets = list(run.get("target_components", []))
+        return str(targets[-1])
+
+    def _resolve_diagnostic_secret_values(
+        self, config: dict[str, Any]
+    ) -> tuple[str, ...]:
+        references: set[str] = set()
+
+        def walk(value: Any, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child in value.items():
+                    walk(child, str(child_key))
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child, key)
+            elif key.endswith("_ref") and isinstance(value, str):
+                references.add(value)
+
+        walk(config)
+        resolver = DockerSecretResolver(self.secret_root)
+        values: list[str] = []
+        for reference in sorted(references):
+            try:
+                values.append(resolver.resolve(reference))
+            except (OSError, ValueError):
+                continue
+        return tuple(values)
 
     @staticmethod
     def _normalize_components(target_components: list[str]) -> list[str]:

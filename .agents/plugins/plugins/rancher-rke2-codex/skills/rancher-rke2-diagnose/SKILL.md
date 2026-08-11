@@ -19,7 +19,11 @@ do not invent run state or evidence.
    successful checkpoint.
 3. Read only the relevant event window with `get_run_events`.
 4. Call `collect_diagnostics` for that component. Increase `depth` only when the
-   first evidence set is insufficient.
+   first evidence set is insufficient. Use `summary` for a fast first sample,
+   `standard` for bounded log tails plus package-database audit, and `deep` only
+   when the first two levels do not explain the checkpoint. The tool accepts no
+   arbitrary command or path and authenticates to the control host only to run
+   its fixed read-only evidence set.
 5. Separate facts, server-reported findings, hypotheses, and missing evidence.
 6. Return the smallest remediation plan and identify which component skill would
    own a later fix.

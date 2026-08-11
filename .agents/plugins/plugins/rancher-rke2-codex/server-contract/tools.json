@@ -1,5 +1,5 @@
 {
-  "contract_version": "0.11.9",
+  "contract_version": "0.11.16",
   "server_name": "rancher-rke2",
   "tools": [
     {
@@ -75,6 +75,13 @@
       "required": ["run_id"],
       "optional": ["after_cursor", "limit"],
       "purpose": "Read structured, redacted run events incrementally."
+    },
+    {
+      "name": "collect_diagnostics",
+      "mutation": false,
+      "required": ["run_id"],
+      "optional": ["component", "depth"],
+      "purpose": "Collect fixed, bounded, credential-redacted runtime evidence from the declared control host without changing infrastructure. Depth is summary, standard, or deep."
     }
   ],
   "planned_tools": [
@@ -96,13 +103,6 @@
       "mutation": true,
       "required": ["run_id", "approval_text", "idempotency_key"],
       "purpose": "Request a safe cancellation at the next supported checkpoint."
-    },
-    {
-      "name": "collect_diagnostics",
-      "mutation": false,
-      "required": ["run_id"],
-      "optional": ["component", "depth"],
-      "purpose": "Collect redacted evidence and hypotheses without making changes."
     },
     {
       "name": "render_runbook",

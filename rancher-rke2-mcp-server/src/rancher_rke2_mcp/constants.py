@@ -27,13 +27,14 @@ READ_ONLY_TOOLS = (
     "render_runbook",
     "get_run",
     "get_run_events",
+    "collect_diagnostics",
 )
 
 MUTATION_TOOLS = ("start_run", "start_workflow")
 
-SCHEMA_VERSION = "0.11.15"
-CONTRACT_VERSION = "0.11.15"
-SERVER_VERSION = "0.11.15"
+SCHEMA_VERSION = "0.11.16"
+CONTRACT_VERSION = "0.11.16"
+SERVER_VERSION = "0.11.16"
 MAX_YAML_BYTES = 1024 * 1024
 PLAN_TTL_HOURS = 24
 PREFLIGHT_TCP_TIMEOUT_SECONDS = 5.0

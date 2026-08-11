@@ -1,4 +1,19 @@
-# Rancher/RKE2 MCP Server 0.11.9
+# Rancher/RKE2 MCP Server 0.11.16
+
+## 0.11.16 read-only runtime diagnostics
+
+`collect_diagnostics(run_id, component?, depth?)` collects a fixed, read-only
+evidence set from the strict-known-host SSH control host. It can return
+allowlisted component-log metadata and bounded tails, related control-host and
+control-container process snapshots, package-database audit output, and
+conservative findings about stale logs or missing processes. The optional depth
+is `summary`, `standard`, or `deep`; when the component is omitted the server
+selects the first failed, running, or blocked target component.
+
+The tool never accepts arbitrary commands or paths and excludes runtime env,
+Terraform state, inventories, kubeconfigs, and private keys. Before returning,
+all evidence is redacted using the run's referenced Docker Secret values plus
+generic credential, bearer-token, and credential-bearing URL patterns.
 
 ## 0.11.9 defer RancherLB preflight for VM plans
 

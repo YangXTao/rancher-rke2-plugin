@@ -16,6 +16,7 @@ from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
 from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
+from rancher_rke2_mcp.diagnostics import build_findings
 from rancher_rke2_mcp.executor import (
     DownstreamExecutor,
     ExecutionResult,
@@ -23,6 +24,7 @@ from rancher_rke2_mcp.executor import (
     VmExecutor,
 )
 from rancher_rke2_mcp.secrets import DockerSecretResolver, read_secret_setting
+from rancher_rke2_mcp.redaction import redact_diagnostic_payload
 from rancher_rke2_mcp.server import create_http_app, create_server
 from rancher_rke2_mcp.service import ReadOnlyPlanningService
 from rancher_rke2_mcp.storage import SQLiteStore
@@ -37,6 +39,7 @@ EXAMPLE = (PROJECT_ROOT / "examples" / "config.example.yaml").read_text(
 def make_service(
     tmp_path: Path, *, secret_root: Path | None = None, executor=None, node_executor=None,
     local_executor=None, rancher_executor=None, downstream_executor=None,
+    diagnostics_collector=None,
 ) -> ReadOnlyPlanningService:
     return ReadOnlyPlanningService(
         SQLiteStore(tmp_path / "state.db"),
@@ -46,6 +49,7 @@ def make_service(
         local_executor=local_executor,
         rancher_executor=rancher_executor,
         downstream_executor=downstream_executor,
+        diagnostics_collector=diagnostics_collector,
     )
 
 
@@ -103,6 +107,31 @@ class CapturingExecutor(QueuedExecutor):
 
     def submit(self, **kwargs: object) -> None:
         self.submitted = kwargs
+
+
+class CapturingDiagnosticsCollector:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def ready(self) -> bool:
+        return True
+
+    def collect(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(kwargs)
+        return {
+            "run_id": kwargs["run_id"],
+            "component": kwargs["component"],
+            "non_mutating": True,
+            "logs": [
+                {
+                    "name": "install-control-dependencies.log",
+                    "tail": (
+                        "apt-get --proxy-url http://operator:proxy-value@proxy.example "
+                        "password=control_host_password-value"
+                    ),
+                }
+            ],
+        }
 
 
 def write_required_secrets(secret_root: Path) -> None:
@@ -234,7 +263,7 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
             response = await client.list_tools()
             names = tuple(tool.name for tool in response.tools)
             assert set(names) == set(READ_ONLY_TOOLS) | set(MUTATION_TOOLS)
-            assert len(names) == 12
+            assert len(names) == 13
             by_name = {tool.name: tool for tool in response.tools}
             for name in READ_ONLY_TOOLS:
                 annotations = by_name[name].annotations
@@ -261,6 +290,11 @@ def test_mcp_client_discovers_read_only_and_approval_gate_tools(tmp_path: Path) 
             )
             assert capability.structured_content["data"]["secrets_persisted"] is False
             assert capability.structured_content["data"]["preflight_mutates_infrastructure"] is False
+            diagnostics = await client.call_tool(
+                "collect_diagnostics",
+                {"run_id": "run-does-not-exist"},
+            )
+            assert diagnostics.structured_content["state"] == "NOT_FOUND"
 
     asyncio.run(scenario())
 
@@ -308,6 +342,139 @@ def test_get_capabilities_reports_downstream_execution_scope(tmp_path: Path) -> 
     capabilities = service.get_capabilities()["data"]
     assert "downstream" in capabilities["execution_scope"]
     assert capabilities["infrastructure_side_effects"] is True
+
+
+def test_collect_diagnostics_selects_running_component_and_redacts_evidence(
+    tmp_path: Path,
+) -> None:
+    secret_root = tmp_path / "secrets"
+    write_required_secrets(secret_root)
+    collector = CapturingDiagnosticsCollector()
+    service = make_service(
+        tmp_path,
+        secret_root=secret_root,
+        diagnostics_collector=collector,
+    )
+    validation = service.validate_config(EXAMPLE)
+    digest = validation["data"]["config_digest"]
+    run_id = "run-20260811T052438Z-b80fedbfd96c"
+    service.store.save_run(
+        {
+            "run_id": run_id,
+            "plan_id": "plan-diagnostics",
+            "config_digest": digest,
+            "state": "RUNNING",
+            "workflow": True,
+            "target_components": ["vm", "node-init"],
+            "component_states": [
+                {"component": "vm", "state": "SUCCEEDED"},
+                {
+                    "component": "node-init",
+                    "state": "RUNNING",
+                    "checkpoint": "control_host_execution_started",
+                },
+            ],
+            "created_at": "2026-08-11T05:24:38Z",
+            "updated_at": "2026-08-11T05:26:36Z",
+        }
+    )
+
+    result = service.collect_diagnostics(run_id)
+
+    assert result["ok"] is True
+    assert result["state"] == "DIAGNOSTICS_AVAILABLE"
+    assert collector.calls[0]["component"] == "node-init"
+    assert collector.calls[0]["depth"] == "standard"
+    assert collector.calls[0]["artifact_path"].endswith(
+        f"/runs/{run_id}/node-init"
+    )
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "control_host_password-value" not in serialized
+    assert "proxy-value" not in serialized
+    assert "***REDACTED***" in serialized
+
+
+def test_collect_diagnostics_rejects_invalid_scope_and_depth(tmp_path: Path) -> None:
+    service = make_service(tmp_path, diagnostics_collector=CapturingDiagnosticsCollector())
+    validation = service.validate_config(EXAMPLE)
+    digest = validation["data"]["config_digest"]
+    run_id = "run-20260811T052438Z-diagnostics"
+    service.store.save_run(
+        {
+            "run_id": run_id,
+            "plan_id": "plan-diagnostics",
+            "config_digest": digest,
+            "state": "RUNNING",
+            "target_components": ["node-init"],
+            "component_states": [{"component": "node-init", "state": "RUNNING"}],
+            "created_at": "2026-08-11T05:24:38Z",
+            "updated_at": "2026-08-11T05:26:36Z",
+        }
+    )
+
+    invalid_component = service.collect_diagnostics(run_id, component="vm")
+    invalid_depth = service.collect_diagnostics(run_id, depth="everything")
+
+    assert invalid_component["state"] == "INVALID"
+    assert invalid_component["errors"][0]["path"] == "component"
+    assert invalid_depth["state"] == "INVALID"
+    assert invalid_depth["errors"][0]["path"] == "depth"
+
+
+def test_runtime_diagnostics_capability_tracks_collector(tmp_path: Path) -> None:
+    unavailable = make_service(tmp_path).get_capabilities()["data"]
+    available = make_service(
+        tmp_path,
+        diagnostics_collector=CapturingDiagnosticsCollector(),
+    ).get_capabilities()["data"]
+
+    assert unavailable["runtime_diagnostics"] is False
+    assert available["runtime_diagnostics"] is True
+    assert available["diagnostics_authentication_attempted"] is True
+    assert available["diagnostics_mutates_infrastructure"] is False
+
+
+def test_diagnostic_redaction_scrubs_structured_and_unstructured_secrets() -> None:
+    result = redact_diagnostic_payload(
+        {
+            "password": "plain-value",
+            "stdout": (
+                "Authorization: Bearer abc123 --token token-value "
+                "http://user:proxy-pass@example.test exact-secret "
+                '\"password\": \"json-secret\"'
+            ),
+        },
+        ("exact-secret",),
+    )
+    serialized = json.dumps(result)
+
+    assert "plain-value" not in serialized
+    assert "abc123" not in serialized
+    assert "token-value" not in serialized
+    assert "proxy-pass" not in serialized
+    assert "exact-secret" not in serialized
+    assert "json-secret" not in serialized
+
+
+def test_diagnostic_findings_distinguish_stale_active_process() -> None:
+    logs = [
+        {
+            "name": "install-control-dependencies.log",
+            "exists": True,
+            "modified_timestamp": 100.0,
+            "tail": "Get:107 package",
+        }
+    ]
+
+    findings, hypotheses = build_findings(
+        component_state="RUNNING",
+        logs=logs,
+        process_text="apt-get install -y",
+        now_timestamp=1000.0,
+    )
+
+    assert findings[0]["code"] == "STALE_LOG_WITH_ACTIVE_PROCESS"
+    assert hypotheses
 
 
 def test_downstream_plan_is_executable(tmp_path: Path) -> None:

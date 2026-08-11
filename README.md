@@ -1,12 +1,13 @@
 # Rancher/RKE2 MCP Automation
 
-This repository contains the 0.4.0 release for a remote, TLS-protected
+This repository contains the 0.11.16 release for a remote, TLS-protected
 Rancher/RKE2 planning, preflight, and approval-gated run-state service and its Codex Plugin.
 
 ## Contents
 
 - `rancher-rke2-mcp-server/`: remote Docker-deployed MCP Server. It validates
-  reference-only configuration and creates non-executable plans.
+  reference-only configuration, creates immutable plans, executes approved
+  workflows, and collects bounded read-only runtime diagnostics.
 - `.agents/plugins/plugins/rancher-rke2-codex/`: Codex Plugin with orchestration
   skills, MCP contract, and client-side plaintext-credential blocking hooks,
   published through the repository marketplace (`.agents/plugins/marketplace.json`).
@@ -19,14 +20,16 @@ never commit secret values.
 
 ## Baseline behavior
 
-Version 0.4.0 exposes planning, preflight, and approval-gated run-state tools:
+Version 0.11.16 exposes planning, preflight, approval-gated execution, run-state,
+runbook, and read-only diagnostic tools:
 `get_capabilities`, `get_config_schema`, `validate_config`, `build_plan`,
-`get_plan`, `preflight_plan`, `get_preflight`, `start_run`, `get_run`, and
-`get_run_events`.
+`get_plan`, `preflight_plan`, `get_preflight`, `render_runbook`, `start_run`,
+`start_workflow`, `get_run`, `get_run_events`, and `collect_diagnostics`.
 
 When a plan includes `vm`, its target nodes are treated as not yet created and
 their SSH checks are skipped. vCenter, registry, control-host, and optional proxy
 TCP checks remain required.
 
-`start_run` accepts only a VM-only plan with an exact approval and matching passed
-preflight. It records a durable blocked run in 0.4.0; no remote executor is present.
+`start_run` and `start_workflow` require exact approval text and a matching passed
+preflight. `collect_diagnostics` authenticates to the declared control host but
+runs only fixed read-only evidence commands and redacts returned text.

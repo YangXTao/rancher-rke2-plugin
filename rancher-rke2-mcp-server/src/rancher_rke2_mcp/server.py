@@ -10,6 +10,7 @@ import uvicorn
 
 from .auth import StaticBearerAuthMiddleware
 from .constants import SERVER_VERSION
+from .diagnostics import DiagnosticsCollector
 from .executor import (
     DownstreamExecutor,
     LocalRke2Executor,
@@ -46,35 +47,39 @@ def create_server(
         "RANCHER_RKE2_MCP_DB",
         "./data/state.db",
     )
+    selected_secret_root = str(
+        secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")
+    )
+    selected_known_hosts = os.environ.get(
+        "RANCHER_RKE2_CONTROL_KNOWN_HOSTS",
+        "/run/secrets/control_host_known_hosts",
+    )
     service = ReadOnlyPlanningService(
         SQLiteStore(store_path),
-        secret_root=str(
-            secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")
-        ),
+        secret_root=selected_secret_root,
         executor=VmExecutor(
-            secret_root=str(
-                secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")
-            ),
-            known_hosts_path=os.environ.get(
-                "RANCHER_RKE2_CONTROL_KNOWN_HOSTS",
-                "/run/secrets/control_host_known_hosts",
-            ),
+            secret_root=selected_secret_root,
+            known_hosts_path=selected_known_hosts,
         ),
         node_executor=NodeInitExecutor(
-            secret_root=str(secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")),
-            known_hosts_path=os.environ.get("RANCHER_RKE2_CONTROL_KNOWN_HOSTS", "/run/secrets/control_host_known_hosts"),
+            secret_root=selected_secret_root,
+            known_hosts_path=selected_known_hosts,
         ),
         local_executor=LocalRke2Executor(
-            secret_root=str(secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")),
-            known_hosts_path=os.environ.get("RANCHER_RKE2_CONTROL_KNOWN_HOSTS", "/run/secrets/control_host_known_hosts"),
+            secret_root=selected_secret_root,
+            known_hosts_path=selected_known_hosts,
         ),
         rancher_executor=RancherExecutor(
-            secret_root=str(secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")),
-            known_hosts_path=os.environ.get("RANCHER_RKE2_CONTROL_KNOWN_HOSTS", "/run/secrets/control_host_known_hosts"),
+            secret_root=selected_secret_root,
+            known_hosts_path=selected_known_hosts,
         ),
         downstream_executor=DownstreamExecutor(
-            secret_root=str(secret_root or os.environ.get("RANCHER_RKE2_SECRET_ROOT", "/run/secrets")),
-            known_hosts_path=os.environ.get("RANCHER_RKE2_CONTROL_KNOWN_HOSTS", "/run/secrets/control_host_known_hosts"),
+            secret_root=selected_secret_root,
+            known_hosts_path=selected_known_hosts,
+        ),
+        diagnostics_collector=DiagnosticsCollector(
+            secret_root=selected_secret_root,
+            known_hosts_path=selected_known_hosts,
         ),
     )
     server = MCPServer(
@@ -91,6 +96,8 @@ def create_server(
             "same configuration, then creates rancher2_cluster_v2 and registers every custom node "
             "in the approved role order. Both mutation paths use strict known-host SSH verification "
             "and the declared control container."
+            " collect_diagnostics authenticates to the same control host but runs only "
+            "fixed read-only evidence commands and redacts returned text."
         ),
         version=SERVER_VERSION,
     )
@@ -191,6 +198,15 @@ def create_server(
     ) -> dict[str, Any]:
         """Read structured, redacted run events incrementally."""
         return service.get_run_events(run_id, after_cursor, limit)
+
+    @server.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    def collect_diagnostics(
+        run_id: str,
+        component: str | None = None,
+        depth: str = "standard",
+    ) -> dict[str, Any]:
+        """Collect redacted, read-only runtime evidence for one run component."""
+        return service.collect_diagnostics(run_id, component, depth)
 
     return server
 

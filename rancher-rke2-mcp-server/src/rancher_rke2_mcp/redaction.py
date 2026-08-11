@@ -19,6 +19,15 @@ SECRET_NAME_ONLY_KEYS = (
     "tlssecretname",
 )
 URL_CREDENTIALS = re.compile(r"(://)[^/@:\s]+:[^/@\s]+@")
+SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?i)([\"']?\b(?:password|passwd|token|credential|private[_-]?key)\b"
+    r"[\"']?\s*[:=]\s*)([\"']?[^\s,;}\]]+)"
+)
+SENSITIVE_FLAG = re.compile(
+    r"(?i)(--(?:password|passwd|token|secret|credential|private-key|proxy-url)"
+    r"(?:=|\s+))([^\s]+)"
+)
+BEARER_TOKEN = re.compile(r"(?i)(\bauthorization\s*:\s*bearer\s+)([^\s]+)")
 
 
 def redact(value: Any, key: str = "") -> Any:
@@ -38,3 +47,35 @@ def redact(value: Any, key: str = "") -> Any:
     if isinstance(value, str):
         return URL_CREDENTIALS.sub(r"\1***:***@", value)
     return value
+
+
+def redact_text(value: str, secret_values: tuple[str, ...] = ()) -> str:
+    """Redact credentials from unstructured diagnostic text."""
+
+    result = value
+    for secret in sorted({item for item in secret_values if item}, key=len, reverse=True):
+        result = result.replace(secret, REDACTED)
+    result = URL_CREDENTIALS.sub(r"\1***:***@", result)
+    result = SENSITIVE_FLAG.sub(r"\1" + REDACTED, result)
+    result = SENSITIVE_ASSIGNMENT.sub(r"\1" + REDACTED, result)
+    result = BEARER_TOKEN.sub(r"\1" + REDACTED, result)
+    return result
+
+
+def redact_diagnostic_payload(value: Any, secret_values: tuple[str, ...] = ()) -> Any:
+    """Apply structured and unstructured redaction to diagnostic evidence."""
+
+    structured = redact(value)
+
+    def scrub(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {str(key): scrub(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [scrub(child) for child in item]
+        if isinstance(item, tuple):
+            return [scrub(child) for child in item]
+        if isinstance(item, str):
+            return redact_text(item, secret_values)
+        return item
+
+    return scrub(structured)

@@ -53,9 +53,13 @@ Codex Desktop（插件 rancher-rke2-codex）
 - **组件产物可从失败 workflow 复用**（v0.11.15）：`latest_succeeded_component_run`
   由"整体 run SUCCEEDED"放宽为"组件级 SUCCEEDED"，允许 downstream 复用
   整体失败 workflow 中已成功的 rancher 产物。
+- **只读运行时诊断**（v0.11.16）：新增 `collect_diagnostics`，按
+  `summary|standard|deep` 深度采集固定白名单日志尾部、控制机/控制容器相关进程和
+  包数据库审计；不接受任意命令或路径，返回前按 Docker Secret 实值与凭据模式脱敏。
 - **插件发布为 git marketplace**：新增 `.agents/plugins/marketplace.json`
   （marketplace 名 `rancher-rke2`），插件源码迁至
-  `.agents/plugins/plugins/rancher-rke2-codex/`，版本 `0.11.0+codex.20260807090918`。
+  `.agents/plugins/plugins/rancher-rke2-codex/`，当前 cachebuster 版本
+  `0.11.0+codex.20260811055606`。
 - **RHEL 8.10 全流程跑通**（2026-08-11）：RKE2 v1.35.6+rke2r1 + Rancher
   2.14.3-ent + downstream 全部 SUCCEEDED，并渲染新配置手册。
 
@@ -78,14 +82,15 @@ Codex Desktop（插件 rancher-rke2-codex）
 
 本会话涉及的主要文件（均在 `rancher-rke2-mcp-server/` 下，除非注明）：
 
-- `src/rancher_rke2_mcp/constants.py`：版本常量（当前 0.11.15）
+- `src/rancher_rke2_mcp/constants.py`：版本常量（当前 0.11.16）
+- `src/rancher_rke2_mcp/diagnostics.py`：只读运行时诊断采集、日志活性判定与固定命令白名单
 - `src/rancher_rke2_mcp/runbook.py`：纯人工 15 章手册渲染 + 内置审计
 - `src/rancher_rke2_mcp/storage.py`：`latest_succeeded_component_run` 组件级复用
 - `src/rancher_rke2_mcp/executor.py`：`downstream_minimum_kernel`（fallback 4.18）、vm apt proxy 相关环境
 - `src/rancher_rke2_mcp/assets/vm/install-control-dependencies.sh`：apt/curl 走代理
 - `src/rancher_rke2_mcp/assets/node-init/ansible/playbooks/node-init.yml`：python3 引导
 - `src/rancher_rke2_mcp/assets/downstream/ansible/roles/downstream_register/{defaults,tasks}/main.yml`：按发行版内核判断
-- `tests/test_read_only_server.py`：runbook/内核/产物复用相关测试（46/46）
+- `tests/test_read_only_server.py`：runbook/内核/产物复用/运行时诊断相关测试（51/51）
 - `.agents/plugins/marketplace.json`：git marketplace 清单
 - `.agents/plugins/plugins/rancher-rke2-codex/`：插件源码（原 `rancher-rke2-codex/` 迁入，git mv 保留历史）
 - `README.md`：目录说明更新
@@ -96,7 +101,7 @@ Codex Desktop（插件 rancher-rke2-codex）
 ```bash
 cd ~/rancher-rke2-mcp-server/rancher-rke2-plugin
 git fetch origin --tags
-git switch --detach v0.11.15
+git switch --detach v0.11.16
 cd rancher-rke2-mcp-server
 export DOCKER_API_VERSION=1.41
 docker-compose stop rancher-rke2-mcp rancher-rke2-mcp-proxy
@@ -133,8 +138,8 @@ codex plugin add rancher-rke2-codex@rancher-rke2
 
 ### 6.1 代码
 - 分支：`dev/rancher-rke2-automation`（唯一 dev 分支；不推 main）
-- 最新发布 tag：`v0.11.15`（MCP Server 版本常量 0.11.15）
-- 测试：46/46 通过（venv：`C:\Users\tg\AppData\Local\Temp\mcp-venv-0.11`）
+- 最新发布 tag：`v0.11.16`（MCP Server 版本常量 0.11.16）
+- 测试：51/51 通过（仓库内忽略的 `rancher-rke2-mcp-server/.venv`）
 - 工作区当前无未提交改动
 
 ### 6.2 基础设施（2026-08-11 验证成功）
@@ -157,10 +162,8 @@ codex plugin add rancher-rke2-codex@rancher-rke2
 
 ## 7. 尚未解决的问题
 
-- **无 read_run_log 工具**：诊断失败依赖用户从控制机贴日志
-  （`/data/rancher/automation/runs/<run>/<component>/*.log`）。
-- **客户端插件未与 server 同步**：插件版本仍是 0.11.0+codex.20260807090918，
-  服务器 0.11.15；功能兼容（get_capabilities 为权威清单），如需完全同步要发布新 cachebuster。
+- **运行时诊断是采样而非持续监控**：`collect_diagnostics` 可读固定白名单日志和进程，
+  但单次进程快照不能证明持续前进；必要时应间隔调用比较日志大小与修改时间。
 - **重跑全流程没有自动清理**：需先在 vCenter 删除既有 VM（IP 冲突），
   并在 Rancher 删除同名 downstream 集群（否则 terraform 409 AlreadyExists）。
 - **手册渲染需要有效 plan**：plan 有效期 24h，过期后需重新 validate→build_plan→render。
@@ -169,7 +172,7 @@ codex plugin add rancher-rke2-codex@rancher-rke2
 ## 8. 下一步任务
 
 1. 验证 Rancher UI 登录（初始管理员密码在服务器 Secret）与下游集群节点 Ready。
-2. 可选：同步客户端插件到 v0.11.15（更新 cachebuster → 推送 → 新电脑重装）。
+2. 发布后在客户端重装新 cachebuster，并新建任务加载 `collect_diagnostics`。
 3. 可选：新增 OS/版本支持时回归 node-init 引导、内核阈值、镜像策略。
 4. 如需全流程再验证：清 VM → 删 Rancher downstream 集群 → 重新批准跑 workflow。
 
@@ -206,6 +209,6 @@ codex plugin add rancher-rke2-codex@rancher-rke2
 
 ### 10.5 快速恢复动作
 1. `git pull`（或 clone）到目标机器，切 `dev/rancher-rke2-automation`。
-2. 确认服务器 `get_capabilities` 返回 v0.11.15。
+2. 确认服务器 `get_capabilities` 返回 v0.11.16，并包含 `collect_diagnostics`。
 3. 需要执行时：validate → build_plan → preflight → 用户发批准文本 → start_workflow。
 4. 需要手册时：build_plan 全流程 → render_runbook → 同步 outputs。

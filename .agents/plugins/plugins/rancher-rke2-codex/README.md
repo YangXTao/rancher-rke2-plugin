@@ -1,4 +1,12 @@
-# Rancher RKE2 Codex Plugin 0.11.0
+# Rancher RKE2 Codex Plugin
+
+## Server contract 0.11.16 runtime diagnostics
+
+The diagnostics skill can now call the implemented read-only
+`collect_diagnostics` tool with `summary`, `standard`, or `deep` evidence depth.
+The server derives the component artifact path from persisted run state, samples
+only allowlisted logs and process metadata, and redacts Docker Secret values and
+credential patterns before returning evidence.
 
 ## 0.11.0 downstream custom cluster execution
 
@@ -130,7 +138,7 @@ Server完成规划、未来执行、状态跟踪、诊断和审计。
 
 ## 接入
 
-1. 部署 `rancher-rke2-mcp-server` 0.4.0。
+1. 部署 `rancher-rke2-mcp-server` 0.11.16。
 2. 用受Windows信任的证书启用HTTPS。
 3. 确认 `.mcp.json` 地址与证书SAN一致。
 4. 在Codex客户端设置 `RANCHER_RKE2_MCP_TOKEN`。
