@@ -1,0 +1,142 @@
+run: {run_id: auto, workspace: /data/rancher/automation}
+execution:
+  control_host: {address: 192.168.2.248, port: 22, username: root, password: "<control-host-password>"}
+  container:
+    {enabled: true, name: rancher-rke2-control, image: "ubuntu:24.04",
+     network: host, software_mount: "/software:/software",
+     workspace_mount: "/data/rancher/automation:/data/rancher/automation",
+     host_docker: {version: "20.10.24", install_method: static-binary, package_manager_install: false,
+       archive: "/software/docker/docker-20.10.24.tgz"}}
+control_dependencies:
+  auto_install: true
+  proxy_url: "http://proxy.example.internal:60000"
+downloads: {mode: online, software_root: /software}
+terraform_provider_cache:
+  enabled: true
+  root: /software/terraform
+  platform: linux_amd64
+  source: rancher/rancher2
+  version: "13.1.4"
+  release_base_url: https://github.com/rancher/terraform-provider-rancher2/releases/download
+node_access: {username: root, port: 22, password: "<node-password>"}
+rancher:
+  api_url: https://192.168.2.20
+  username: admin
+  password: "<rancher-bootstrap-password>"
+  ca_file: /data/rancher/automation/runs/<run_id>/rancher/certs/cacerts.pem
+  server_url: https://192.168.2.20
+downstream_cluster:
+  name: kata-downstream
+  rke2_version: "v1.34.8+rke2r2"
+  # 这里只列出本自动化需要用户自定义的配置；未列出的集群参数使用 Rancher/RKE2 默认值
+  rkeConfig:
+    chartValues:
+      rke2-cilium:
+        hubble:
+          enabled: true
+          metrics:
+            enableOpenMetrics: true
+            enabled:
+              - "dns:query;ignoreAAAA"
+              - drop
+              - tcp
+              - flow
+              - icmp
+              - http
+              - port-distribution
+          relay:
+            enabled: true
+          ui:
+            enabled: true
+        k8sServiceHost: 127.0.0.1
+        k8sServicePort: "6443"
+        kubeProxyReplacement: true
+    etcd:
+      disableSnapshots: false
+      snapshotRetention: 5
+      snapshotScheduleCron: "0 */5 * * *"
+    machineGlobalConfig:
+      cluster-cidr: 10.42.0.0/16
+      cluster-dns: 10.43.0.10
+      cni: cilium
+      disable-kube-proxy: true
+      etcd-arg:
+        - "--auto-compaction-mode=periodic"
+        - "--auto-compaction-retention=1h0m0s"
+        - "--quota-backend-bytes=6442450944"
+      kube-apiserver-arg:
+        - "--watch-cache=true"
+        - "--default-watch-cache-size=200"
+        - "--max-requests-inflight=400"
+        - "--max-mutating-requests-inflight=200"
+      kube-controller-manager-arg:
+        - "--node-monitor-grace-period=20s"
+        - "--node-startup-grace-period=30s"
+      service-cidr: 10.43.0.0/16
+    machinePools: null
+    machineSelectorConfig:
+      - config:
+          kubelet-arg:
+            - "kube-reserved=cpu=1,memory=2048Mi"
+            - "system-reserved=cpu=1,memory=2048Mi"
+            - "container-log-max-files=5"
+            - "container-log-max-size=100Mi"
+            - "cgroups-per-qos=true"
+            - "enforce-node-allocatable=pods"
+            - "eviction-hard=memory.available<256Mi,nodefs.available<10%,imagefs.available<15%,nodefs.inodesFree<5%"
+            - "eviction-soft=memory.available<512Mi,nodefs.available<15%,imagefs.available<20%,nodefs.inodesFree<10%"
+            - "eviction-soft-grace-period=memory.available=1m30s,nodefs.available=1m30s,imagefs.available=1m30s,nodefs.inodesFree=1m30s"
+            - "eviction-max-pod-grace-period=30"
+            - "eviction-pressure-transition-period=30s"
+            - "max-open-files=1000000"
+            - "registry-burst=10"
+            - "registry-qps=0"
+            - "serialize-image-pulls=false"
+            - "sync-frequency=30s"
+            - "max-pods=999"
+          protect-kernel-defaults: false
+  registries:
+    enabled: true
+    systemDefaultRegistry: ""
+    configs:
+      - hostname: "192.168.10.51"
+        authConfigSecretName: myharbor-auth
+        tlsSecretName: ""
+        caBundle: ""
+        insecure: true
+    mirrors:
+      - hostname: docker.io
+        endpoints: ["https://192.168.10.51"]
+        rewrites: {"(^.+$)": "hub/$1"}
+      - hostname: dp.apps.rancher.io
+        endpoints: ["https://192.168.10.51"]
+        rewrites: {"(^.+$)": "dp.apps.rancher.io/$1"}
+      - hostname: ghcr.io
+        endpoints: ["https://ghcr.zscr.io"]
+        rewrites: {}
+      - hostname: k8s.gcr.io
+        endpoints: ["https://192.168.10.51"]
+        rewrites: {"(^.+$)": "registry.k8s.io/$1"}
+      - hostname: quay.io
+        endpoints: ["https://192.168.10.51"]
+        rewrites: {"(^.+$)": "quay.io/$1"}
+      - hostname: registry.k8s.io
+        endpoints: ["https://192.168.10.51"]
+        rewrites: {"(^.+$)": "registry.k8s.io/$1"}
+      - hostname: registry.rancher.com
+        endpoints: ["https://192.168.10.51"]
+        rewrites: {"(^.+$)": "registry.rancher.com/$1"}
+      - hostname: registry.suse.com
+        endpoints: ["https://192.168.10.51"]
+        rewrites: {"(^.+$)": "registry.suse.com/$1"}
+nodes:
+  - {hostname: kata-master01, ip: 192.168.2.24, roles: [etcd, controlplane]}
+  - {hostname: kata-master02, ip: 192.168.2.25, roles: [etcd, controlplane]}
+  - {hostname: kata-master03, ip: 192.168.2.26, roles: [etcd, controlplane]}
+  - {hostname: kata-worker01, ip: 192.168.2.27, roles: [worker]}
+  - {hostname: kata-worker02, ip: 192.168.2.28, roles: [worker]}
+  - {hostname: kata-worker03, ip: 192.168.2.29, roles: [worker]}
+terraform: {version: "1.14.7", rancher2_provider: "13.1.4"}
+registration:
+  order: [first-controlplane, first-worker, remaining-controlplanes, remaining-workers]
+  require_insecure_curl: true

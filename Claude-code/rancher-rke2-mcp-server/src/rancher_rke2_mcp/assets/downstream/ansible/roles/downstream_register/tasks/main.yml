@@ -1,0 +1,113 @@
+---
+- name: Detect downstream OS branch for the kernel policy
+  ansible.builtin.set_fact:
+    downstream_os_branch: >-
+      {{
+        'kylin-v11' if 'kylin' in (ansible_distribution | lower)
+        else 'ubuntu' if ansible_os_family == 'Debian'
+        else 'redhat' if ansible_os_family == 'RedHat'
+        else 'unsupported'
+      }}
+
+- name: Select the per-distribution minimum kernel
+  ansible.builtin.set_fact:
+    downstream_required_kernel: >-
+      {{ downstream_minimum_kernels.get(downstream_os_branch, downstream_minimum_kernel) }}
+
+- name: Validate downstream roles
+  ansible.builtin.assert:
+    that:
+      - rancher_node_roles | length > 0
+      - rancher_node_roles | difference(['etcd', 'controlplane', 'worker']) | length == 0
+      - ansible_kernel is version(downstream_required_kernel, '>=')
+    fail_msg: "Invalid roles or kernel below {{ downstream_required_kernel }} on {{ inventory_hostname }}"
+
+- name: Read protected Rancher registration command
+  ansible.builtin.slurp:
+    src: "{{ downstream_registration_command_file }}"
+  delegate_to: localhost
+  become: false
+  register: downstream_registration_secret
+  no_log: true
+
+- name: Build role-specific registration command
+  ansible.builtin.set_fact:
+    downstream_base_registration_command: >-
+      {{ downstream_registration_secret.content | b64decode | trim }}
+  no_log: true
+
+- name: Require an explicit insecure curl option for self-signed Rancher TLS
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not downstream_registration_require_insecure_curl | bool)
+        or ((downstream_base_registration_command
+             | regex_search('(^|\\s)--insecure(\\s|$)|(^|\\s)-[A-Za-z]*k[A-Za-z]*(\\s|$)'))
+            is not none)
+    fail_msg: Protected Rancher registration command is missing curl --insecure/-k
+  no_log: true
+
+- name: Add node roles to the protected registration command
+  ansible.builtin.set_fact:
+    downstream_registration_command: >-
+      {{ downstream_base_registration_command }}
+      {% if 'etcd' in rancher_node_roles %} --etcd{% endif %}
+      {% if 'controlplane' in rancher_node_roles %} --controlplane{% endif %}
+      {% if 'worker' in rancher_node_roles %} --worker{% endif %}
+  no_log: true
+
+- name: Register node with Rancher
+  ansible.builtin.shell: "{{ downstream_registration_command }}"
+  args:
+    executable: /bin/bash
+    creates: /etc/rancher/agent/config.yaml
+  no_log: true
+
+- name: Wait for Rancher system agent service
+  ansible.builtin.systemd:
+    name: rancher-system-agent.service
+    state: started
+  register: downstream_agent_service
+  retries: 30
+  delay: 10
+  until: downstream_agent_service.status.ActiveState == 'active'
+
+- name: Select the downstream RKE2 service for this role
+  ansible.builtin.set_fact:
+    downstream_rke2_service: >-
+      {{ 'rke2-server.service' if
+         (rancher_node_roles | intersect(['etcd', 'controlplane']) | length > 0)
+         else 'rke2-agent.service' }}
+
+- name: Wait for the role-specific downstream RKE2 service
+  ansible.builtin.systemd:
+    name: "{{ downstream_rke2_service }}"
+    state: started
+  register: downstream_rke2_service_state
+  retries: 60
+  delay: 10
+  until: >-
+    downstream_rke2_service_state.status is defined
+    and downstream_rke2_service_state.status.ActiveState == 'active'
+
+- name: Configure downstream RKE2 command environment
+  ansible.builtin.copy:
+    dest: /etc/profile.d/rke2.sh
+    mode: '0644'
+    content: |
+      export PATH="$PATH:/var/lib/rancher/rke2/bin"
+      {% if rancher_node_roles | intersect(['etcd', 'controlplane']) | length > 0 %}
+      export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+      {% endif %}
+
+- name: Configure downstream crictl endpoint
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    mode: '0644'
+    content: |
+      runtime-endpoint: unix:///run/k3s/containerd/containerd.sock
+      image-endpoint: unix:///run/k3s/containerd/containerd.sock
+      timeout: 1
+      debug: false
+      pull-image-on-create: false
+      disable-pull-on-run: false

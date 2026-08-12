@@ -1,0 +1,15 @@
+hostname: "{{ rancher_hostname }}"
+replicas: {{ rancher_replicas }}
+tls: "{{ rancher_helm_tls }}"
+ingress:
+  enabled: false
+privateCA: {{ rancher_private_ca | bool | lower }}
+service:
+  type: "{{ rancher_helm_service_type }}"
+useBundledSystemChart: {{ rancher_use_bundled_system_chart | bool | lower }}
+additionalTrustedCAs: {{ rancher_standard_profile.additional_trusted_cas | bool | lower }}
+rancherImage: "{{ (registry_hostname ~ '/') if registry_enabled else '' }}{{ rancher_standard_profile.rancher_image_path }}"
+rancherImageTag: "v{{ rancher_base_version }}"
+{% if registry_enabled %}
+systemDefaultRegistry: "{{ registry_hostname }}"
+{% endif %}

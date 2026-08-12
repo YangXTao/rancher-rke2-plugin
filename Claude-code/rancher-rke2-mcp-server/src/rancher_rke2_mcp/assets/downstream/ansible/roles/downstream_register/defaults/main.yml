@@ -1,0 +1,8 @@
+---
+downstream_registration_command_file: "/data/rancher/automation/runs/{{ automation_run_id }}/secrets/downstream-registration-command"
+downstream_minimum_kernel: "4.18"
+downstream_minimum_kernels:
+  ubuntu: "5.4"
+  redhat: "4.18"
+  kylin-v11: "4.19"
+downstream_registration_require_insecure_curl: true

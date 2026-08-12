@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "rancher-rke2-claude-code",
+  "displayName": "Rancher RKE2 Automation",
+  "version": "0.1.0",
+  "description": "Claude Code plugin for a TLS-protected Rancher/RKE2 MCP server with secret references, non-mutating preflight, approval-gated workflows, diagnostics, and audited runbooks.",
+  "author": {
+    "name": "Rancher RKE2 Automation Team"
+  },
+  "repository": "https://github.com/YangXTao/rancher-rke2-plugin",
+  "keywords": [
+    "rancher",
+    "rke2",
+    "mcp",
+    "vsphere",
+    "infrastructure"
+  ],
+  "userConfig": {
+    "mcp_url": {
+      "type": "string",
+      "title": "Rancher RKE2 MCP URL",
+      "description": "HTTPS streamable-HTTP endpoint, including /mcp.",
+      "required": true,
+      "default": "https://192.168.10.184:8443/mcp"
+    },
+    "mcp_token": {
+      "type": "string",
+      "title": "Rancher RKE2 MCP token",
+      "description": "Bearer token provisioned on the MCP server.",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}

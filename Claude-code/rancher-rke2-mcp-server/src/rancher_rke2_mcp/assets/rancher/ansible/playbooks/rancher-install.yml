@@ -1,0 +1,9 @@
+---
+- name: Generate certificates and install Rancher on local RKE2
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - role: rancher_control

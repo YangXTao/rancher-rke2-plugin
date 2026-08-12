@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "rancher-rke2-claude",
+  "description": "Claude Code plugins for approval-gated Rancher and RKE2 automation.",
+  "owner": {
+    "name": "Rancher RKE2 Automation Team"
+  },
+  "plugins": [
+    {
+      "name": "rancher-rke2-claude-code",
+      "source": {
+        "source": "git-subdir",
+        "url": "YangXTao/rancher-rke2-plugin",
+        "path": "Claude-code/plugins/rancher-rke2-claude-code",
+        "ref": "Claude-code0.1.0"
+      },
+      "description": "Plan, execute, diagnose, and document Rancher/RKE2 workflows through a TLS-protected MCP server.",
+      "author": {
+        "name": "Rancher RKE2 Automation Team"
+      }
+    }
+  ]
+}

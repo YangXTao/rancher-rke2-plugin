@@ -1,0 +1,1584 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import logging
+from threading import Thread
+import time
+from typing import Any
+from uuid import uuid4
+
+from .constants import (
+    COMPONENT_DEPENDENCIES,
+    COMPONENT_ORDER,
+    CONTRACT_VERSION,
+    MUTATION_TOOLS,
+    PLAN_TTL_HOURS,
+    PREFLIGHT_TCP_TIMEOUT_SECONDS,
+    READ_ONLY_TOOLS,
+    SCHEMA_VERSION,
+    SECRET_REFERENCE_SCHEMES,
+    SERVER_VERSION,
+)
+from .preflight import NonMutatingPreflight
+from .diagnostics import DIAGNOSTIC_DEPTHS, DiagnosticsCollector
+from .redaction import redact_diagnostic_payload
+from .runbook import (
+    SUPPORTED_FORMATS,
+    SUPPORTED_OUTPUT_PROFILES,
+    render as render_runbook_manual,
+)
+from .executor import (
+    DownstreamExecutor,
+    ExecutionResult,
+    LocalRke2Executor,
+    NodeInitExecutor,
+    RancherExecutor,
+    VmExecutor,
+    _default_registry_mirrors,
+)
+from .secrets import DockerSecretResolver
+from .storage import SQLiteStore
+from .validation import config_schema, validate
+
+
+LOGGER = logging.getLogger(__name__)
+WORKFLOW_NODE_READY_TIMEOUT_SECONDS = 300
+WORKFLOW_NODE_READY_POLL_SECONDS = 5
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _run_id(value: datetime) -> str:
+    """Create an operator-readable, collision-resistant run identifier."""
+    return f"run-{value.strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:12]}"
+
+
+def _envelope(
+    *,
+    ok: bool,
+    state: str,
+    data: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+    errors: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": ok,
+        "request_id": "req-" + uuid4().hex,
+        "state": state,
+        "data": data or {},
+        "warnings": warnings or [],
+        "errors": errors or [],
+        "artifacts": [],
+    }
+
+
+def _effective_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the normalized configuration with execution defaults expanded.
+
+    Downstream ``rke_config``/``registries`` and Local RKE2 registry
+    ``mirrors``/``configs`` are filled from the reference defaults when omitted,
+    so the user sees the exact settings the executors will apply. Secret values
+    are never resolved; only ``docker-secret`` references and public values are
+    returned.
+    """
+    result = dict(config)
+    downstream = dict(result.get("downstream_cluster", {}))
+    if not downstream.get("rke_config"):
+        downstream["rke_config"] = DownstreamExecutor._default_downstream_rke_config()
+    if not downstream.get("registries"):
+        downstream["registries"] = DownstreamExecutor._default_downstream_registries(
+            config
+        )
+    result["downstream_cluster"] = downstream
+
+    local = dict(result.get("local_rke2", {}))
+    local_registry = dict(local.get("registry", {}))
+    if "mirrors" not in local_registry:
+        local_registry["mirrors"] = _default_registry_mirrors(config)
+    if "configs" not in local_registry:
+        registry = config["registry"]
+        auth_enabled = bool(registry.get("username") and registry.get("password_ref"))
+        local_registry["configs"] = {
+            str(registry["hostname"]): {
+                "auth": {
+                    "enabled": auth_enabled,
+                    "username": registry.get("username") or "",
+                    "password_ref": registry.get("password_ref") or "",
+                },
+                "tls": {
+                    "insecure_skip_verify": bool(
+                        registry.get("insecure_skip_verify", False)
+                    ),
+                    "ca_file": "",
+                },
+            }
+        }
+    local["registry"] = local_registry
+    result["local_rke2"] = local
+    return result
+
+
+class ReadOnlyPlanningService:
+    def __init__(
+        self,
+        store: SQLiteStore,
+        *,
+        secret_root: str = "/run/secrets",
+        preflight_timeout_seconds: float = PREFLIGHT_TCP_TIMEOUT_SECONDS,
+        executor: VmExecutor | None = None,
+        node_executor: NodeInitExecutor | None = None,
+        local_executor: LocalRke2Executor | None = None,
+        rancher_executor: RancherExecutor | None = None,
+        downstream_executor: DownstreamExecutor | None = None,
+        diagnostics_collector: DiagnosticsCollector | None = None,
+    ):
+        self.store = store
+        self.secret_root = secret_root
+        self.preflight_timeout_seconds = preflight_timeout_seconds
+        self.executor = executor
+        self.node_executor = node_executor
+        self.local_executor = local_executor
+        self.rancher_executor = rancher_executor
+        self.downstream_executor = downstream_executor
+        self.diagnostics_collector = diagnostics_collector
+
+    def get_capabilities(self) -> dict[str, Any]:
+        workflow_scopes = self._workflow_scopes()
+        return _envelope(
+            ok=True,
+            state="READY",
+            data={
+                "server_name": "rancher-rke2",
+                "server_version": SERVER_VERSION,
+                "contract_version": CONTRACT_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "transport": "streamable-http",
+                "deployment": "remote-docker",
+                "components": list(COMPONENT_ORDER),
+                "modes": ["online", "offline"],
+                "read_only_tools": list(READ_ONLY_TOOLS),
+                "mutation_tools": list(MUTATION_TOOLS),
+                "infrastructure_side_effects": bool(
+                    (self.executor is not None and self.executor.ready())
+                    or (self.node_executor is not None and self.node_executor.ready())
+                    or (self.local_executor is not None and self.local_executor.ready())
+                    or (self.rancher_executor is not None and self.rancher_executor.ready())
+                    or (self.downstream_executor is not None and self.downstream_executor.ready())
+                ),
+                "plaintext_credentials_compatible": False,
+                "secret_reference_schemes": list(SECRET_REFERENCE_SCHEMES),
+                "secrets_persisted": False,
+                "preflight_network_checks": True,
+                "preflight_authentication_attempted": False,
+                "preflight_mutates_infrastructure": False,
+                "runtime_diagnostics": bool(
+                    self.diagnostics_collector is not None
+                    and self.diagnostics_collector.ready()
+                ),
+                "diagnostics_authentication_attempted": True,
+                "diagnostics_mutates_infrastructure": False,
+                "execution_scope": [name for name, executor in (("vm", self.executor), ("node-init", self.node_executor), ("local-rke2", self.local_executor), ("rancher", self.rancher_executor), ("downstream", self.downstream_executor)) if executor and executor.ready()],
+                "workflow_execution_scope": workflow_scopes[-1] if workflow_scopes else [],
+                "workflow_execution_scopes": workflow_scopes,
+                "execution_backend": "ssh-control-container",
+                "execution_backend_configured": bool(
+                    self.executor is not None and self.executor.ready()
+                ),
+                "transport_security_required": True,
+            },
+        )
+
+    def get_config_schema(self) -> dict[str, Any]:
+        return _envelope(
+            ok=True,
+            state="SCHEMA_AVAILABLE",
+            data={"schema": config_schema()},
+        )
+
+    def validate_config(self, config: str | dict[str, Any]) -> dict[str, Any]:
+        outcome = validate(config)
+        if not outcome.valid:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                warnings=outcome.warnings,
+                errors=outcome.errors,
+            )
+        assert outcome.normalized is not None
+        assert outcome.config_digest is not None
+        created_at = _iso(_now())
+        self.store.save_config(
+            outcome.config_digest,
+            outcome.normalized,
+            created_at,
+        )
+        return _envelope(
+            ok=True,
+            state="VALIDATED",
+            data={
+                "valid": True,
+                "schema_version": SCHEMA_VERSION,
+                "config_digest": outcome.config_digest,
+                "validated_at": created_at,
+                "redacted_preview": outcome.redacted_preview,
+                "effective_config": _effective_config(outcome.normalized),
+            },
+            warnings=outcome.warnings,
+        )
+
+    def build_plan(
+        self,
+        config_digest: str,
+        target_components: list[str],
+    ) -> dict[str, Any]:
+        config = self.store.get_config(config_digest)
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "Unknown digest; call validate_config first.",
+                    }
+                ],
+            )
+        try:
+            components = self._normalize_components(target_components)
+        except ValueError as exc:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[{"path": "target_components", "message": str(exc)}],
+            )
+
+        created = _now()
+        expires = created + timedelta(hours=PLAN_TTL_HOURS)
+        plan_id = "plan-" + uuid4().hex
+        component_plans = [
+            self._component_plan(component, config) for component in components
+        ]
+        plan = {
+            "plan_id": plan_id,
+            "state": "PLANNED",
+            "read_only": True,
+            "executable": components in (["vm"], ["node-init"], ["local-rke2"], ["rancher"], ["downstream"], ["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"]),
+            "execution_mode": "WORKFLOW" if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"]) else "COMPONENT",
+            "config_digest": config_digest,
+            "target_components": components,
+            "created_at": _iso(created),
+            "expires_at": _iso(expires),
+            "component_plans": component_plans,
+            "global_prerequisites": [
+                "专属服务器上的只读 MCP 容器可用",
+                "配置已通过结构与一致性校验",
+                "本阶段不会进行任何目标环境连通性探测",
+            ],
+            "warnings": [
+                "这是静态部署计划，不代表目标环境已经具备条件。",
+                "计划不包含执行命令，也不能启动、续跑或销毁基础设施。",
+                "在计划有效期内可调用 preflight_plan 执行非变更前置检查。",
+                "SQLite 只保存 Secret 引用；真实凭据不进入配置摘要或计划。",
+            ],
+            "approval_text": (
+                f"APPROVE WORKFLOW {plan_id}"
+                if components in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"])
+                else f"APPROVE PLAN {plan_id}"
+            ),
+        }
+        plan["plan_digest"] = self._plan_digest(plan)
+        self.store.save_plan(plan)
+        return _envelope(ok=True, state="PLANNED", data={"plan": plan})
+
+    def get_plan(self, plan_id: str) -> dict[str, Any]:
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        expires = datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00"))
+        state = "EXPIRED" if expires <= _now() else "PLANNED"
+        plan["state"] = state
+        return _envelope(ok=True, state=state, data={"plan": plan})
+
+    def preflight_plan(self, plan_id: str) -> dict[str, Any]:
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        expires = datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00"))
+        if expires <= _now():
+            return _envelope(
+                ok=False,
+                state="EXPIRED",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "Plan has expired; validate configuration and build a new plan.",
+                    }
+                ],
+            )
+        config = self.store.get_config(plan["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "The configuration associated with this plan is unavailable.",
+                    }
+                ],
+            )
+
+        checks = NonMutatingPreflight(
+            DockerSecretResolver(self.secret_root),
+            timeout_seconds=self.preflight_timeout_seconds,
+        ).run(config, planned_components=plan["target_components"])
+        failed = sum(item["status"] == "FAILED" for item in checks)
+        passed = sum(item["status"] == "PASSED" for item in checks)
+        skipped = sum(item["status"] == "SKIPPED" for item in checks)
+        state = "PASSED" if failed == 0 else "FAILED"
+        created_at = _iso(_now())
+        preflight = {
+            "preflight_id": "preflight-" + uuid4().hex,
+            "plan_id": plan_id,
+            "config_digest": plan["config_digest"],
+            "state": state,
+            "non_mutating": True,
+            "authentication_attempted": False,
+            "created_at": created_at,
+            "expires_at": plan["expires_at"],
+            "summary": {"passed": passed, "failed": failed, "skipped": skipped},
+            "checks": checks,
+        }
+        self.store.save_preflight(preflight)
+        return _envelope(
+            ok=failed == 0,
+            state=state,
+            data={"preflight": preflight},
+            warnings=[
+                "Preflight only resolves Secret availability and opens TCP connections; it does not authenticate, execute commands, or change infrastructure."
+            ],
+        )
+
+    def get_preflight(self, preflight_id: str) -> dict[str, Any]:
+        preflight = self.store.get_preflight(preflight_id)
+        if preflight is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "preflight_id", "message": "Unknown preflight ID."}],
+            )
+        expires = datetime.fromisoformat(
+            preflight["expires_at"].replace("Z", "+00:00")
+        )
+        state = "EXPIRED" if expires <= _now() else preflight["state"]
+        return _envelope(
+            ok=state == "PASSED", state=state, data={"preflight": preflight}
+        )
+
+    def render_runbook(
+        self,
+        plan_id: str,
+        format: str = "markdown",
+        output_profile: str = "human-step-by-step",
+    ) -> dict[str, Any]:
+        """Render an audited human-executable manual from an immutable plan."""
+        if format not in SUPPORTED_FORMATS:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[{"path": "format", "message": f"unsupported format: {format}"}],
+            )
+        if output_profile not in SUPPORTED_OUTPUT_PROFILES:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "output_profile",
+                        "message": f"unsupported output_profile: {output_profile}",
+                    }
+                ],
+            )
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        expires = datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00"))
+        if expires <= _now():
+            return _envelope(
+                ok=False,
+                state="EXPIRED",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "Plan has expired; validate configuration and build a new plan.",
+                    }
+                ],
+            )
+        config = self.store.get_config(plan["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The configuration associated with this plan is unavailable.",
+                    }
+                ],
+            )
+        manual, findings = render_runbook_manual(
+            plan,
+            config,
+            format=format,
+            output_profile=output_profile,
+        )
+        manual_dir = self.store.path.parent / "manuals"
+        manual_dir.mkdir(parents=True, exist_ok=True)
+        artifact = manual_dir / f"{plan_id}.md"
+        artifact.write_text(manual, encoding="utf-8")
+        return _envelope(
+            ok=not findings,
+            state="RENDERED" if not findings else "RENDERED_WITH_FINDINGS",
+            data={
+                "plan_id": plan_id,
+                "format": format,
+                "output_profile": output_profile,
+                "artifact_path": str(artifact),
+                "audit_findings": findings,
+                "manual": manual,
+            },
+        )
+
+    def start_workflow(
+        self,
+        *,
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+        approval_text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Start one approval-gated VM-to-node-init or VM-to-Local-RKE2 workflow."""
+        request_fingerprint = self._request_fingerprint(
+            "workflow", plan_id, config_digest, preflight_id, approval_text
+        )
+        existing = self.store.get_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing["request_fingerprint"] != request_fingerprint:
+                return _envelope(
+                    ok=False,
+                    state="IDEMPOTENCY_CONFLICT",
+                    errors=[{
+                        "path": "idempotency_key",
+                        "message": "This key was already used for a different request.",
+                    }],
+                )
+            run = self.store.get_run(existing["run_id"])
+            if run is None:
+                return _envelope(
+                    ok=False,
+                    state="INTERNAL_ERROR",
+                    errors=[{
+                        "path": "idempotency_key",
+                        "message": "The persisted idempotent workflow is unavailable.",
+                    }],
+                )
+            return _envelope(
+                ok=True,
+                state=run["state"],
+                data={"run": run, "idempotent_replay": True},
+            )
+
+        plan, preflight, config, error = self._validated_execution_inputs(
+            plan_id=plan_id,
+            config_digest=config_digest,
+            preflight_id=preflight_id,
+        )
+        if error is not None:
+            return error
+        assert plan is not None and preflight is not None and config is not None
+        components = plan["target_components"]
+        if components not in (["vm", "node-init"], ["vm", "node-init", "local-rke2"], ["vm", "node-init", "local-rke2", "rancher"], ["vm", "node-init", "local-rke2", "rancher", "downstream"]):
+            return _envelope(
+                ok=False,
+                state="UNSUPPORTED_SCOPE",
+                errors=[{
+                    "path": "plan_id",
+                    "message": "start_workflow accepts exactly [vm, node-init], [vm, node-init, local-rke2], [vm, node-init, local-rke2, rancher], or [vm, node-init, local-rke2, rancher, downstream].",
+                }],
+            )
+        if approval_text != plan["approval_text"]:
+            return _envelope(
+                ok=False,
+                state="APPROVAL_REQUIRED",
+                errors=[{
+                    "path": "approval_text",
+                    "message": "Approval text must exactly match the workflow approval text.",
+                }],
+            )
+        if not self._workflow_ready_for(components):
+            return _envelope(
+                ok=False,
+                state="EXECUTION_BACKEND_UNAVAILABLE",
+                errors=[{
+                    "path": "execution.control_host",
+                    "message": "Every selected workflow executor requires mounted known_hosts and packaged assets.",
+                }],
+            )
+
+        created = _now()
+        run_id = _run_id(created)
+        created_at = _iso(created)
+        run = {
+            "run_id": run_id,
+            "state": "QUEUED",
+            "workflow": True,
+            "plan_id": plan_id,
+            "config_digest": config_digest,
+            "preflight_id": preflight_id,
+            "target_components": components,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "execution_backend": "ssh-control-container",
+            "component_states": self._initial_workflow_states(components),
+        }
+        self.store.save_run(run)
+        self.store.save_idempotency_key(idempotency_key, request_fingerprint, run_id)
+        self.store.append_run_event(
+            run_id,
+            created_at,
+            {
+                "type": "WORKFLOW_QUEUED",
+                "message": "Workflow approval and initial preflight were accepted.",
+                "components": components,
+            },
+        )
+        Thread(
+            target=self._run_workflow,
+            args=(config, run_id),
+            daemon=True,
+            name=f"rancher-rke2-workflow-{run_id[-8:]}",
+        ).start()
+        return _envelope(
+            ok=True,
+            state="QUEUED",
+            data={"run": run, "idempotent_replay": False},
+        )
+
+    def start_run(
+        self,
+        *,
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+        approval_text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Queue one approval-gated component execution on the SSH control host."""
+        request_fingerprint = self._request_fingerprint(
+            plan_id, config_digest, preflight_id, approval_text
+        )
+        existing = self.store.get_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing["request_fingerprint"] != request_fingerprint:
+                return _envelope(
+                    ok=False,
+                    state="IDEMPOTENCY_CONFLICT",
+                    errors=[
+                        {
+                            "path": "idempotency_key",
+                            "message": "This key was already used for a different request.",
+                        }
+                    ],
+                )
+            run = self.store.get_run(existing["run_id"])
+            if run is None:
+                return _envelope(
+                    ok=False,
+                    state="INTERNAL_ERROR",
+                    errors=[
+                        {
+                            "path": "idempotency_key",
+                            "message": "The persisted idempotent run is unavailable.",
+                        }
+                    ],
+                )
+            return _envelope(
+                ok=True,
+                state=run["state"],
+                data={"run": run, "idempotent_replay": True},
+            )
+
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        if plan["config_digest"] != config_digest:
+            return _envelope(
+                ok=False,
+                state="CONFIG_MISMATCH",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The supplied digest does not match the plan.",
+                    }
+                ],
+            )
+        if datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00")) <= _now():
+            return _envelope(
+                ok=False,
+                state="EXPIRED",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "Plan has expired; validate, plan, and preflight again.",
+                    }
+                ],
+            )
+        if plan["target_components"] not in (["vm"], ["node-init"], ["local-rke2"], ["rancher"], ["downstream"]):
+            return _envelope(
+                ok=False,
+                state="UNSUPPORTED_SCOPE",
+                errors=[
+                    {
+                        "path": "plan_id",
+                        "message": "start_run accepts a single vm, node-init, local-rke2, rancher, or downstream plan; use start_workflow for ordered multi-component plans.",
+                    }
+                ],
+            )
+        expected_approval = plan["approval_text"]
+        if approval_text != expected_approval:
+            return _envelope(
+                ok=False,
+                state="APPROVAL_REQUIRED",
+                errors=[
+                    {
+                        "path": "approval_text",
+                        "message": "Approval text must exactly match the plan approval text.",
+                    }
+                ],
+            )
+
+        preflight = self.store.get_preflight(preflight_id)
+        if preflight is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {"path": "preflight_id", "message": "Unknown preflight ID."}
+                ],
+            )
+        if preflight["plan_id"] != plan_id or preflight["config_digest"] != config_digest:
+            return _envelope(
+                ok=False,
+                state="PREFLIGHT_MISMATCH",
+                errors=[
+                    {
+                        "path": "preflight_id",
+                        "message": "Preflight does not belong to the selected plan and configuration.",
+                    }
+                ],
+            )
+        if preflight["state"] != "PASSED" or datetime.fromisoformat(
+            preflight["expires_at"].replace("Z", "+00:00")
+        ) <= _now():
+            return _envelope(
+                ok=False,
+                state="PREFLIGHT_REQUIRED",
+                errors=[
+                    {
+                        "path": "preflight_id",
+                        "message": "A current PASSED preflight is required before starting a run.",
+                    }
+                ],
+            )
+
+        component = plan["target_components"][0]
+        selected_executor = {
+            "vm": self.executor,
+            "node-init": self.node_executor,
+            "local-rke2": self.local_executor,
+            "rancher": self.rancher_executor,
+            "downstream": self.downstream_executor,
+        }[component]
+        if selected_executor is None or not selected_executor.ready():
+            return _envelope(
+                ok=False,
+                state="EXECUTION_BACKEND_UNAVAILABLE",
+                errors=[
+                    {
+                        "path": "execution.control_host",
+                        "message": "The component executor requires a mounted control_host_known_hosts file and packaged assets.",
+                    }
+                ],
+            )
+
+        config = self.store.get_config(config_digest)
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "config_digest", "message": "Configuration is unavailable."}],
+            )
+        if component == "rancher":
+            local_run = self.store.latest_succeeded_component_run(config_digest, "local-rke2")
+            if local_run is None:
+                return _envelope(
+                    ok=False,
+                    state="LOCAL_RKE2_ARTIFACT_REQUIRED",
+                    errors=[{"path": "local-rke2", "message": "A successful Local RKE2 component run with this configuration is required before Rancher."}],
+                )
+            config = dict(config)
+            workspace = str(config["run"]["workspace"]).rstrip("/")
+            config["_rancher_kubeconfig_source"] = f"{workspace}/runs/{local_run['run_id']}/kubeconfig/rke2.yaml"
+        if component == "downstream":
+            rancher_run = self.store.latest_succeeded_component_run(config_digest, "rancher")
+            if rancher_run is None:
+                return _envelope(
+                    ok=False,
+                    state="RANCHER_ARTIFACT_REQUIRED",
+                    errors=[{
+                        "path": "rancher",
+                        "message": "A successful Rancher component run with this configuration is required before downstream.",
+                    }],
+                )
+            config = dict(config)
+            workspace = str(config["run"]["workspace"]).rstrip("/")
+            config["_rancher_ca_source"] = (
+                f"{workspace}/runs/{rancher_run['run_id']}/rancher/cert/output/cacerts.pem"
+            )
+        created_time = _now()
+        created_at = _iso(created_time)
+        run_id = _run_id(created_time)
+        run = {
+            "run_id": run_id,
+            "state": "QUEUED",
+            "plan_id": plan_id,
+            "config_digest": config_digest,
+            "preflight_id": preflight_id,
+            "target_components": [component],
+            "created_at": created_at,
+            "updated_at": created_at,
+            "execution_backend": "ssh-control-container",
+            "component_states": [
+                {
+                    "component": component,
+                    "state": "QUEUED",
+                    "checkpoint": "awaiting_control_host",
+                    "message": f"Approved {component} execution is queued for the SSH control host.",
+                }
+            ],
+        }
+        self.store.save_run(run)
+        self.store.save_idempotency_key(idempotency_key, request_fingerprint, run_id)
+        self.store.append_run_event(
+            run_id,
+            created_at,
+            {
+                "type": "RUN_QUEUED",
+                "component": component,
+                "message": f"Approval and preflight were accepted; {component} execution was queued.",
+            },
+        )
+        selected_executor.submit(
+            config=config,
+            run_id=run_id,
+            on_started=self._mark_component_run_started,
+            on_complete=self._complete_component_run,
+        )
+        return _envelope(
+            ok=True,
+            state="QUEUED",
+            data={"run": run, "idempotent_replay": False},
+        )
+
+    def _workflow_scopes(self) -> list[list[str]]:
+        scopes: list[list[str]] = []
+        if self._workflow_ready_for(["vm", "node-init"]):
+            scopes.append(["vm", "node-init"])
+        if self._workflow_ready_for(["vm", "node-init", "local-rke2"]):
+            scopes.append(["vm", "node-init", "local-rke2"])
+        if self._workflow_ready_for(["vm", "node-init", "local-rke2", "rancher"]):
+            scopes.append(["vm", "node-init", "local-rke2", "rancher"])
+        if self._workflow_ready_for(["vm", "node-init", "local-rke2", "rancher", "downstream"]):
+            scopes.append(["vm", "node-init", "local-rke2", "rancher", "downstream"])
+        return scopes
+
+    def _workflow_ready_for(self, components: list[str]) -> bool:
+        executors = {
+            "vm": self.executor,
+            "node-init": self.node_executor,
+            "local-rke2": self.local_executor,
+            "rancher": self.rancher_executor,
+            "downstream": self.downstream_executor,
+        }
+        return all(executors[name] is not None and executors[name].ready() for name in components)
+
+    @staticmethod
+    def _initial_workflow_states(components: list[str]) -> list[dict[str, str]]:
+        states: list[dict[str, str]] = []
+        for index, component in enumerate(components):
+            if index == 0:
+                states.append({
+                    "component": component,
+                    "state": "QUEUED",
+                    "checkpoint": "awaiting_control_host",
+                    "message": "Approved workflow is queued to create VMs.",
+                })
+            else:
+                states.append({
+                    "component": component,
+                    "state": "BLOCKED",
+                    "checkpoint": f"waiting_for_{components[index - 1]}",
+                    "message": f"Waiting for the {components[index - 1]} component to succeed.",
+                })
+        return states
+
+    def _validated_execution_inputs(
+        self,
+        *,
+        plan_id: str,
+        config_digest: str,
+        preflight_id: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+        plan = self.store.get_plan(plan_id)
+        if plan is None:
+            return None, None, None, _envelope(
+                ok=False, state="NOT_FOUND",
+                errors=[{"path": "plan_id", "message": "Unknown plan ID."}],
+            )
+        if plan["config_digest"] != config_digest:
+            return None, None, None, _envelope(
+                ok=False, state="CONFIG_MISMATCH",
+                errors=[{
+                    "path": "config_digest",
+                    "message": "The supplied digest does not match the plan.",
+                }],
+            )
+        if datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00")) <= _now():
+            return None, None, None, _envelope(
+                ok=False, state="EXPIRED",
+                errors=[{
+                    "path": "plan_id",
+                    "message": "Plan has expired; validate, plan, and preflight again.",
+                }],
+            )
+        preflight = self.store.get_preflight(preflight_id)
+        if preflight is None:
+            return None, None, None, _envelope(
+                ok=False, state="NOT_FOUND",
+                errors=[{"path": "preflight_id", "message": "Unknown preflight ID."}],
+            )
+        if preflight["plan_id"] != plan_id or preflight["config_digest"] != config_digest:
+            return None, None, None, _envelope(
+                ok=False, state="PREFLIGHT_MISMATCH",
+                errors=[{
+                    "path": "preflight_id",
+                    "message": "Preflight does not belong to the selected plan and configuration.",
+                }],
+            )
+        if preflight["state"] != "PASSED" or datetime.fromisoformat(
+            preflight["expires_at"].replace("Z", "+00:00")
+        ) <= _now():
+            return None, None, None, _envelope(
+                ok=False, state="PREFLIGHT_REQUIRED",
+                errors=[{
+                    "path": "preflight_id",
+                    "message": "A current PASSED preflight is required before starting a run.",
+                }],
+            )
+        config = self.store.get_config(config_digest)
+        if config is None:
+            return None, None, None, _envelope(
+                ok=False, state="NOT_FOUND",
+                errors=[{
+                    "path": "config_digest",
+                    "message": "Configuration is unavailable.",
+                }],
+            )
+        return plan, preflight, config, None
+
+    def _run_workflow(self, config: dict[str, Any], run_id: str) -> None:
+        workspace = str(config["run"]["workspace"]).rstrip("/")
+        vm_artifact = f"{workspace}/runs/{run_id}/vm"
+        node_artifact = f"{workspace}/runs/{run_id}/node-init"
+        local_artifact = f"{workspace}/runs/{run_id}/local-rke2"
+        rancher_artifact = f"{workspace}/runs/{run_id}/rancher"
+        downstream_artifact = f"{workspace}/runs/{run_id}/downstream"
+        self._set_workflow_component(
+            run_id, "vm", "RUNNING", "control_host_execution_started",
+            "SSH control-host executor started for VM creation.", "WORKFLOW_STARTED",
+        )
+        try:
+            assert self.executor is not None
+            self.executor.execute(config, vm_artifact)
+        except Exception:
+            LOGGER.exception("Workflow VM component failed for run %s", run_id)
+            self._finish_workflow_failure(
+                run_id, "vm", "VM_EXECUTION_FAILED", vm_artifact,
+                "VM creation failed; node initialization was not started.",
+            )
+            return
+
+        self._set_workflow_component(
+            run_id, "vm", "SUCCEEDED", "completed", "VM_EXECUTION_SUCCEEDED",
+            "VM_EXECUTION_SUCCEEDED", artifact_path=vm_artifact,
+        )
+        self._set_workflow_component(
+            run_id, "node-init", "WAITING", "waiting_for_node_ssh",
+            "Waiting for every newly-created node to accept TCP/22.",
+            "WORKFLOW_NODE_READINESS_WAIT",
+        )
+        try:
+            ready = self._wait_for_workflow_nodes(config)
+        except Exception:
+            LOGGER.exception("Workflow node readiness check failed for run %s", run_id)
+            self._finish_workflow_failure(
+                run_id, "node-init", "NODE_READINESS_CHECK_FAILED", node_artifact,
+                "The node readiness gate could not complete after VM creation.",
+            )
+            return
+        if not ready:
+            self._finish_workflow_failure(
+                run_id, "node-init", "NODE_SSH_NOT_READY", node_artifact,
+                "Node TCP/22 readiness did not pass before the workflow timeout.",
+            )
+            return
+
+        self._set_workflow_component(
+            run_id, "node-init", "RUNNING", "control_host_execution_started",
+            "All nodes passed TCP/22 readiness; node initialization started.",
+            "WORKFLOW_NODE_READINESS_PASSED",
+        )
+        try:
+            assert self.node_executor is not None
+            self.node_executor.execute(config, node_artifact)
+        except Exception:
+            LOGGER.exception("Workflow node-init component failed for run %s", run_id)
+            self._finish_workflow_failure(
+                run_id, "node-init", "NODE_INIT_EXECUTION_FAILED", node_artifact,
+                "Node initialization failed after VM creation.",
+            )
+            return
+
+        self._set_workflow_component(
+            run_id, "node-init", "SUCCEEDED", "completed", "NODE_INIT_SUCCEEDED",
+            "NODE_INIT_SUCCEEDED", artifact_path=node_artifact,
+        )
+        run = self.store.get_run(run_id)
+        if run is None:
+            return
+        if "local-rke2" in run["target_components"]:
+            self._set_workflow_component(
+                run_id, "local-rke2", "RUNNING", "control_host_execution_started",
+                "Node initialization succeeded; Local RKE2 installation started.",
+                "WORKFLOW_LOCAL_RKE2_STARTED",
+            )
+            try:
+                assert self.local_executor is not None
+                self.local_executor.execute(config, local_artifact)
+            except Exception:
+                LOGGER.exception("Workflow Local RKE2 component failed for run %s", run_id)
+                self._finish_workflow_failure(
+                    run_id, "local-rke2", "LOCAL_RKE2_EXECUTION_FAILED", local_artifact,
+                    "Local RKE2 installation failed after node initialization.",
+                )
+                return
+            self._set_workflow_component(
+                run_id, "local-rke2", "SUCCEEDED", "completed", "LOCAL_RKE2_SUCCEEDED",
+                "LOCAL_RKE2_SUCCEEDED", artifact_path=local_artifact,
+            )
+            run = self.store.get_run(run_id)
+            if run is None:
+                return
+        if "rancher" in run["target_components"]:
+            self._set_workflow_component(
+                run_id, "rancher", "RUNNING", "control_host_execution_started",
+                "Local RKE2 succeeded; Rancher installation started.",
+                "WORKFLOW_RANCHER_STARTED",
+            )
+            try:
+                assert self.rancher_executor is not None
+                rancher_config = dict(config)
+                rancher_config["_rancher_kubeconfig_source"] = (
+                    f"{workspace}/runs/{run_id}/kubeconfig/rke2.yaml"
+                )
+                self.rancher_executor.execute(rancher_config, rancher_artifact)
+            except Exception:
+                LOGGER.exception("Workflow Rancher component failed for run %s", run_id)
+                self._finish_workflow_failure(
+                    run_id, "rancher", "RANCHER_EXECUTION_FAILED", rancher_artifact,
+                    "Rancher installation failed after Local RKE2 succeeded.",
+                )
+                return
+            self._set_workflow_component(
+                run_id, "rancher", "SUCCEEDED", "completed", "RANCHER_SUCCEEDED",
+                "RANCHER_SUCCEEDED", artifact_path=rancher_artifact,
+            )
+            run = self.store.get_run(run_id)
+            if run is None:
+                return
+        if "downstream" in run["target_components"]:
+            self._set_workflow_component(
+                run_id, "downstream", "RUNNING", "control_host_execution_started",
+                "Rancher succeeded; downstream cluster creation and node registration started.",
+                "WORKFLOW_DOWNSTREAM_STARTED",
+            )
+            try:
+                assert self.downstream_executor is not None
+                downstream_config = dict(config)
+                downstream_config["_rancher_ca_source"] = (
+                    f"{workspace}/runs/{run_id}/rancher/cert/output/cacerts.pem"
+                )
+                self.downstream_executor.execute(
+                    downstream_config, downstream_artifact
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Workflow downstream component failed for run %s", run_id
+                )
+                self._finish_workflow_failure(
+                    run_id,
+                    "downstream",
+                    "DOWNSTREAM_EXECUTION_FAILED",
+                    downstream_artifact,
+                    "Downstream cluster creation or node registration failed after Rancher succeeded.",
+                )
+                return
+            self._set_workflow_component(
+                run_id, "downstream", "SUCCEEDED", "completed", "DOWNSTREAM_SUCCEEDED",
+                "DOWNSTREAM_SUCCEEDED", artifact_path=downstream_artifact,
+            )
+            run = self.store.get_run(run_id)
+            if run is None:
+                return
+        now = _iso(_now())
+        run["state"] = "SUCCEEDED"
+        run["updated_at"] = now
+        run["runbook"] = self._render_workflow_runbook(config, run)
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run_id, now,
+            {
+                "type": "WORKFLOW_SUCCEEDED",
+                "components": run["target_components"],
+                "artifact_paths": [
+                    f"{workspace}/runs/{run_id}/{component}"
+                    for component in run["target_components"]
+                ],
+            },
+        )
+        runbook = run.get("runbook") or {}
+        if runbook.get("rendered"):
+            self.store.append_run_event(
+                run_id,
+                _iso(_now()),
+                {
+                    "type": (
+                        "WORKFLOW_RUNBOOK_RENDERED"
+                        if runbook.get("audit_passed")
+                        else "WORKFLOW_RUNBOOK_AUDIT_FAILED"
+                    ),
+                    "artifact_path": runbook.get("artifact_path", ""),
+                    "audit_findings": runbook.get("audit_findings", []),
+                    "message": (
+                        "Reference deployment manual rendered and audited."
+                        if runbook.get("audit_passed")
+                        else "Reference deployment manual rendered with unresolved audit findings."
+                    ),
+                },
+            )
+
+    def _render_workflow_runbook(
+        self, config: dict[str, Any], run: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Render the reference manual after a succeeded workflow when enabled."""
+        deliverables = config.get("deliverables") or {}
+        setting = str(deliverables.get("installation_manual", "ask")).strip().lower()
+        require_audit = bool(deliverables.get("require_audit_pass", True))
+        if setting != "true":
+            return {"rendered": False, "setting": setting}
+        outcome = self.render_runbook(run["plan_id"])
+        if not outcome.get("ok"):
+            return {
+                "rendered": False,
+                "setting": setting,
+                "error": outcome.get("state"),
+            }
+        data = outcome["data"]
+        findings = list(data.get("audit_findings", []))
+        return {
+            "rendered": True,
+            "setting": setting,
+            "artifact_path": data["artifact_path"],
+            "audit_findings": findings,
+            "audit_passed": (not findings) or not require_audit,
+        }
+
+    def _wait_for_workflow_nodes(self, config: dict[str, Any]) -> bool:
+        deadline = time.monotonic() + WORKFLOW_NODE_READY_TIMEOUT_SECONDS
+        while True:
+            checks = NonMutatingPreflight(
+                DockerSecretResolver(self.secret_root),
+                timeout_seconds=self.preflight_timeout_seconds,
+            ).run(config, planned_components=["node-init"])
+            node_checks = [item for item in checks if item["name"].startswith("tcp.node_ssh.")]
+            if node_checks and all(item["status"] == "PASSED" for item in node_checks):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(WORKFLOW_NODE_READY_POLL_SECONDS)
+
+    def _set_workflow_component(
+        self,
+        run_id: str,
+        component: str,
+        state: str,
+        checkpoint: str,
+        message: str,
+        event_type: str,
+        *,
+        artifact_path: str | None = None,
+    ) -> None:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return
+        now = _iso(_now())
+        states = {item["component"]: dict(item) for item in run["component_states"]}
+        state_item = {
+            "component": component,
+            "state": state,
+            "checkpoint": checkpoint,
+            "message": message,
+        }
+        if artifact_path is not None:
+            state_item["artifact_path"] = artifact_path
+        states[component] = state_item
+        run["state"] = "RUNNING"
+        run["updated_at"] = now
+        run["component_states"] = [states[name] for name in run["target_components"]]
+        self.store.update_run(run)
+        event: dict[str, Any] = {"type": event_type, "component": component, "message": message}
+        if artifact_path is not None:
+            event["artifact_path"] = artifact_path
+        self.store.append_run_event(run_id, now, event)
+
+    def _finish_workflow_failure(
+        self,
+        run_id: str,
+        component: str,
+        code: str,
+        artifact_path: str,
+        message: str,
+    ) -> None:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return
+        now = _iso(_now())
+        states = {item["component"]: dict(item) for item in run["component_states"]}
+        states[component] = {
+            "component": component,
+            "state": "FAILED",
+            "checkpoint": "component_or_control_host_failed",
+            "message": code,
+            "artifact_path": artifact_path,
+        }
+        for name in run["target_components"]:
+            if name != component and states[name].get("state") in {"BLOCKED", "WAITING"}:
+                states[name] = {
+                    "component": name,
+                    "state": "SKIPPED",
+                    "checkpoint": "dependency_failed",
+                    "message": f"Skipped because {component} did not succeed.",
+                }
+        run["state"] = "FAILED"
+        run["updated_at"] = now
+        run["component_states"] = [states[name] for name in run["target_components"]]
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run_id, now,
+            {
+                "type": code,
+                "component": component,
+                "message": message,
+                "artifact_path": artifact_path,
+            },
+        )
+
+    def _mark_component_run_started(self, run_id: str) -> None:
+        """Persist the transition into the control-host executor thread.
+
+        Execution is intentionally asynchronous so an MCP request returns as soon
+        as approval has been accepted.  Without this transition an active remote
+        runner looked indistinguishable from a scheduler queue until it completed.
+        """
+        run = self.store.get_run(run_id)
+        if run is None or run["state"] != "QUEUED":
+            return
+        now = _iso(_now())
+        component = run["target_components"][0]
+        run["state"] = "RUNNING"
+        run["updated_at"] = now
+        run["component_states"] = [
+            {
+                "component": component,
+                "state": "RUNNING",
+                "checkpoint": "control_host_execution_started",
+                "message": "SSH control-host executor started; component artifacts are being prepared.",
+            }
+        ]
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run_id,
+            now,
+            {
+                "type": "RUN_STARTED",
+                "component": component,
+                "message": "SSH control-host executor started.",
+            },
+        )
+
+    def _complete_component_run(self, result: ExecutionResult) -> None:
+        run = self.store.get_run(result.run_id)
+        if run is None:
+            return
+        now = _iso(_now())
+        run["state"] = "SUCCEEDED" if result.succeeded else "FAILED"
+        run["updated_at"] = now
+        run["component_states"] = [
+            {
+                "component": run["target_components"][0],
+                "state": run["state"],
+                "checkpoint": "completed" if result.succeeded else "component_or_control_host_failed",
+                "message": result.message or result.code,
+                "artifact_path": result.artifact_path,
+            }
+        ]
+        self.store.update_run(run)
+        self.store.append_run_event(
+            run["run_id"],
+            now,
+            {
+                "type": result.code,
+                "component": run["target_components"][0],
+                "artifact_path": result.artifact_path,
+                "message": result.message or result.code,
+            },
+        )
+
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "run_id", "message": "Unknown run ID."}],
+            )
+        return _envelope(ok=run["state"] == "SUCCEEDED", state=run["state"], data={"run": run})
+
+    def get_run_events(
+        self, run_id: str, after_cursor: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        if self.store.get_run(run_id) is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "run_id", "message": "Unknown run ID."}],
+            )
+        try:
+            selected_limit = max(1, min(int(limit), 100))
+            if after_cursor is not None:
+                int(after_cursor)
+        except (TypeError, ValueError):
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "after_cursor",
+                        "message": "after_cursor must be a numeric event cursor.",
+                    }
+                ],
+            )
+        events = self.store.get_run_events(run_id, after_cursor, selected_limit)
+        return _envelope(
+            ok=True,
+            state="EVENTS_AVAILABLE",
+            data={
+                "run_id": run_id,
+                "events": events,
+                "next_cursor": events[-1]["cursor"] if events else after_cursor,
+            },
+        )
+
+    def collect_diagnostics(
+        self,
+        run_id: str,
+        component: str | None = None,
+        depth: str = "standard",
+    ) -> dict[str, Any]:
+        run = self.store.get_run(run_id)
+        if run is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[{"path": "run_id", "message": "Unknown run ID."}],
+            )
+        selected_depth = str(depth).strip().lower()
+        if selected_depth not in DIAGNOSTIC_DEPTHS:
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "depth",
+                        "message": "depth must be summary, standard, or deep.",
+                    }
+                ],
+            )
+        state_by_component = {
+            str(item.get("component")): item
+            for item in run.get("component_states", [])
+        }
+        if component is None:
+            selected_component = self._diagnostic_component(run)
+        else:
+            selected_component = str(component).strip().lower()
+        if selected_component not in run.get("target_components", []):
+            return _envelope(
+                ok=False,
+                state="INVALID",
+                errors=[
+                    {
+                        "path": "component",
+                        "message": "component must be one of the run target components.",
+                    }
+                ],
+            )
+        if self.diagnostics_collector is None or not self.diagnostics_collector.ready():
+            return _envelope(
+                ok=False,
+                state="UNAVAILABLE",
+                errors=[
+                    {
+                        "path": "collect_diagnostics",
+                        "message": "Runtime diagnostics are not configured on this server.",
+                    }
+                ],
+            )
+        config = self.store.get_config(run["config_digest"])
+        if config is None:
+            return _envelope(
+                ok=False,
+                state="NOT_FOUND",
+                errors=[
+                    {
+                        "path": "config_digest",
+                        "message": "The run configuration is unavailable.",
+                    }
+                ],
+            )
+        component_state = state_by_component.get(selected_component, {})
+        workspace = str(config["run"]["workspace"]).rstrip("/")
+        artifact_path = str(
+            component_state.get("artifact_path")
+            or f"{workspace}/runs/{run_id}/{selected_component}"
+        )
+        try:
+            evidence = self.diagnostics_collector.collect(
+                config=config,
+                run_id=run_id,
+                component=selected_component,
+                component_state=str(component_state.get("state", "UNKNOWN")),
+                artifact_path=artifact_path,
+                depth=selected_depth,
+            )
+        except Exception:
+            LOGGER.exception("Diagnostic collection failed for run %s", run_id)
+            return _envelope(
+                ok=False,
+                state="DIAGNOSTICS_FAILED",
+                errors=[
+                    {
+                        "path": "collect_diagnostics",
+                        "message": "Read-only diagnostic collection failed.",
+                    }
+                ],
+            )
+        secret_values = self._resolve_diagnostic_secret_values(config)
+        return _envelope(
+            ok=True,
+            state="DIAGNOSTICS_AVAILABLE",
+            data={
+                "diagnostics": redact_diagnostic_payload(evidence, secret_values),
+            },
+            warnings=[
+                "Diagnostics authenticate to the declared control host but run only fixed read-only commands.",
+                "A single process snapshot cannot prove forward progress; compare repeated collections when necessary.",
+            ],
+        )
+
+    @staticmethod
+    def _diagnostic_component(run: dict[str, Any]) -> str:
+        states = list(run.get("component_states", []))
+        for desired in ("FAILED", "RUNNING", "BLOCKED"):
+            for item in states:
+                if item.get("state") == desired:
+                    return str(item["component"])
+        targets = list(run.get("target_components", []))
+        return str(targets[-1])
+
+    def _resolve_diagnostic_secret_values(
+        self, config: dict[str, Any]
+    ) -> tuple[str, ...]:
+        references: set[str] = set()
+
+        def walk(value: Any, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child in value.items():
+                    walk(child, str(child_key))
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child, key)
+            elif key.endswith("_ref") and isinstance(value, str):
+                references.add(value)
+
+        walk(config)
+        resolver = DockerSecretResolver(self.secret_root)
+        values: list[str] = []
+        for reference in sorted(references):
+            try:
+                values.append(resolver.resolve(reference))
+            except (OSError, ValueError):
+                continue
+        return tuple(values)
+
+    @staticmethod
+    def _normalize_components(target_components: list[str]) -> list[str]:
+        if not target_components:
+            raise ValueError("at least one component is required")
+        requested = [item.strip().lower() for item in target_components]
+        if requested == ["all"] or "all" in requested:
+            if len(requested) != 1:
+                raise ValueError("'all' cannot be combined with component names")
+            return list(COMPONENT_ORDER)
+        unknown = sorted(set(requested) - set(COMPONENT_ORDER))
+        if unknown:
+            raise ValueError("unknown components: " + ", ".join(unknown))
+        return [name for name in COMPONENT_ORDER if name in set(requested)]
+
+    @staticmethod
+    def _plan_digest(plan: dict[str, Any]) -> str:
+        payload = dict(plan)
+        payload.pop("plan_digest", None)
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+    @staticmethod
+    def _request_fingerprint(*values: str) -> str:
+        return "sha256:" + hashlib.sha256(
+            "\x00".join(values).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _component_plan(
+        component: str,
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        management = config["nodes"]["management"]
+        downstream = config["nodes"]["downstream"]
+        versions = config["versions"]
+        safe_details: dict[str, Any]
+        if component == "vm":
+            node_count = (
+                len(management["servers"])
+                + 1
+                + len(downstream["controlplane"])
+                + len(downstream["workers"])
+            )
+            safe_details = {
+                "intended_vm_count": node_count,
+                "datacenter": config["vsphere"]["datacenter"],
+                "resource_pool": config["vsphere"]["resource_pool"],
+                "datastore": config["vsphere"]["datastore"],
+                "network": config["vsphere"]["network"],
+                "template": config["vsphere"]["template"],
+            }
+        elif component == "node-init":
+            safe_details = {
+                "intended_node_count": (
+                    len(management["servers"])
+                    + 1
+                    + len(downstream["controlplane"])
+                    + len(downstream["workers"])
+                ),
+                "checks": [
+                    "sysctl profile",
+                    "kernel modules",
+                    "limits",
+                    "SELinux",
+                    "swap",
+                    "firewall",
+                ],
+            }
+        elif component == "local-rke2":
+            safe_details = {
+                "server_count": len(management["servers"]),
+                "rke2_version": versions["rke2_management"],
+                "cni": config.get("local_rke2", {}).get("cni", "cilium"),
+                "load_balancer_hostname": management["load_balancer"]["hostname"],
+            }
+        elif component == "rancher":
+            safe_details = {
+                "rancher_version": versions["rancher"],
+                "replicas": config["rancher"]["replicas"],
+                "nodeport": config["rancher"]["nodeport"],
+                "publication_host": management["load_balancer"]["hostname"],
+            }
+        else:
+            safe_details = {
+                "cluster_name": config["downstream_cluster"]["name"],
+                "rke2_version": versions["rke2_downstream"],
+                "controlplane_count": len(downstream["controlplane"]),
+                "worker_count": len(downstream["workers"]),
+                "registration_order": config["downstream_cluster"]["registration"][
+                    "order"
+                ],
+            }
+        return {
+            "component": component,
+            "sequence": COMPONENT_ORDER.index(component) + 1,
+            "dependencies": list(COMPONENT_DEPENDENCIES[component]),
+            "operation": "PLAN_ONLY",
+            "would_change_infrastructure": True,
+            "changes_applied": False,
+            "details": safe_details,
+        }

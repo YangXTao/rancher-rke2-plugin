@@ -1,0 +1,111 @@
+{
+  "contract_version": "0.11.16",
+  "server_name": "rancher-rke2",
+  "tools": [
+    {
+      "name": "get_capabilities",
+      "mutation": false,
+      "required": [],
+      "purpose": "Return contract version, supported components, modes and feature flags."
+    },
+    {
+      "name": "get_config_schema",
+      "mutation": false,
+      "required": [],
+      "purpose": "Return the current configuration schema and field annotations."
+    },
+    {
+      "name": "validate_config",
+      "mutation": false,
+      "required": ["config"],
+      "purpose": "Validate and normalize configuration; return config_digest, a redacted preview, and the effective_config with execution defaults expanded."
+    },
+    {
+      "name": "build_plan",
+      "mutation": false,
+      "required": ["config_digest", "target_components"],
+      "purpose": "Create an immutable, expiring execution plan without changing infrastructure."
+    },
+    {
+      "name": "get_plan",
+      "mutation": false,
+      "required": ["plan_id"],
+      "purpose": "Read a plan, its risks, prerequisites, changes and approval text."
+    },
+    {
+      "name": "preflight_plan",
+      "mutation": false,
+      "required": ["plan_id"],
+      "purpose": "Verify mounted Docker Secret availability and required TCP reachability for a valid plan without authenticating or changing infrastructure. Node SSH checks are skipped when the plan includes VM creation."
+    },
+    {
+      "name": "get_preflight",
+      "mutation": false,
+      "required": ["preflight_id"],
+      "purpose": "Read a persisted non-mutating preflight result while its associated plan remains valid."
+    },
+    {
+      "name": "render_runbook",
+      "mutation": false,
+      "required": ["plan_id"],
+      "optional": ["format", "output_profile"],
+      "purpose": "Render an audited, directly executable installation manual from an immutable plan (real versions, endpoints, paths, and commands) and write the audited deliverable to the control host workspace."
+    },
+    {
+      "name": "start_run",
+      "mutation": true,
+      "required": ["plan_id", "config_digest", "preflight_id", "approval_text", "idempotency_key"],
+      "purpose": "Validate one component-plan approval gate, then queue VM, node-init, Local RKE2, Rancher, or downstream execution on the strict-known-host SSH control host. Rancher requires a successful Local RKE2 component run with the same config digest, and downstream requires a successful Rancher run with the same config digest."
+    },
+    {
+      "name": "start_workflow",
+      "mutation": true,
+      "required": ["plan_id", "config_digest", "preflight_id", "approval_text", "idempotency_key"],
+      "purpose": "Validate one exact VM-to-node-init, VM-to-Local-RKE2, VM-to-Rancher, or VM-to-downstream workflow approval, create VMs, wait for every node TCP/22 readiness, initialize nodes, install the three-server Local RKE2 cluster when selected, install Rancher when selected (reusing the same run's Local RKE2 kubeconfig), and create/register the downstream custom cluster when selected (reusing the same run's Rancher private-CA artifact). When deliverables.installation_manual is true it also renders and audits the reference deployment manual. Stops on failure and never retries automatically."
+    },
+    {
+      "name": "get_run",
+      "mutation": false,
+      "required": ["run_id"],
+      "purpose": "Read a persisted approval-gated run state."
+    },
+    {
+      "name": "get_run_events",
+      "mutation": false,
+      "required": ["run_id"],
+      "optional": ["after_cursor", "limit"],
+      "purpose": "Read structured, redacted run events incrementally."
+    },
+    {
+      "name": "collect_diagnostics",
+      "mutation": false,
+      "required": ["run_id"],
+      "optional": ["component", "depth"],
+      "purpose": "Collect fixed, bounded, credential-redacted runtime evidence from the declared control host without changing infrastructure. Depth is summary, standard, or deep."
+    }
+  ],
+  "common_rules": {
+    "target_components": [
+      "vm",
+      "node-init",
+      "local-rke2",
+      "rancher",
+      "downstream"
+    ],
+    "plaintext_credentials_allowed": false,
+    "secret_reference_schemes": [
+      "docker-secret"
+    ],
+    "persist_secret_values": false,
+    "https_required": true,
+    "redact_credentials_from_results": true,
+    "server_side_authorization_required_for_mutations": true,
+    "server_side_idempotency_required_for_mutations": true,
+    "preflight_before_mutation_required": true,
+    "preflight_performs_authentication": false,
+    "preflight_changes_infrastructure": false,
+    "component_execution_scope": ["vm", "node-init", "local-rke2", "rancher", "downstream"],
+    "workflow_execution_scope": ["vm", "node-init", "local-rke2", "rancher", "downstream"],
+    "control_host_known_hosts_required": true
+  }
+}

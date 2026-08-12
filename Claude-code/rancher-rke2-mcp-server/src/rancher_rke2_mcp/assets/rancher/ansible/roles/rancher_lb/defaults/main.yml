@@ -1,0 +1,22 @@
+---
+lb_runtime: docker
+lb_runtime_archive_source: /software/docker/docker-20.10.24.tgz
+lb_runtime_archive_remote: /software/docker/docker-20.10.24.tgz
+lb_runtime_installer: "{{ playbook_dir }}/../../scripts/install-lb-runtime.sh"
+nginx_version: ""
+nginx_image: "nginx:{{ nginx_version }}"
+rancher_publish_mode: nodeport-l7
+rancher_hostname: ""
+rancher_access_mode: fqdn
+rancher_certificate:
+  source: generate
+  ca_file: ""
+  cert_file: ""
+  key_file: ""
+rancher_http_nodeport: 30080
+rancher_lb_config_dir: /data/nginx
+rancher_lb_container_name: rancher-l7
+management_server_ips: []
+registry_enabled: false
+registry_hostname: ""
+registry_insecure_skip_verify: false
