@@ -9,6 +9,7 @@ from threading import Thread
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from .control_container import ControlContainerManager
 from .secrets import DockerSecretResolver
 
 
@@ -80,13 +81,22 @@ class VmExecutor:
         secret_root: str,
         known_hosts_path: str = "/run/secrets/control_host_known_hosts",
         assets_root: Path | None = None,
+        control_container_manager: ControlContainerManager | None = None,
     ) -> None:
         self.secret_root = secret_root
         self.known_hosts_path = Path(known_hosts_path)
         self.assets_root = assets_root or Path(__file__).parent / "assets" / "vm"
+        self.control_container_manager = control_container_manager or ControlContainerManager(
+            secret_root=secret_root,
+            known_hosts_path=known_hosts_path,
+        )
 
     def ready(self) -> bool:
-        return self.known_hosts_path.is_file() and self.assets_root.is_dir()
+        return (
+            self.known_hosts_path.is_file()
+            and self.assets_root.is_dir()
+            and self.control_container_manager.ready()
+        )
 
     def submit(
         self,
@@ -123,6 +133,7 @@ class VmExecutor:
 
     def execute(self, config: dict[str, Any], artifact_path: str) -> None:
         """Run this component synchronously for a workflow coordinator."""
+        self.control_container_manager.prepare(config, artifact_path)
         self._run(config, artifact_path)
 
     def _run(self, config: dict[str, Any], artifact_path: str) -> None:
@@ -155,7 +166,7 @@ class VmExecutor:
                     artifact_path,
                     str(container["name"]),
                     str(container["image"]),
-                    str(container["strategy"]),
+                    "reuse",
                     str(config["downloads"]["software_root"]),
                     str(config["run"]["workspace"]),
                     str(config["downloads"]["mode"]),
@@ -356,6 +367,7 @@ class NodeInitExecutor(VmExecutor):
 
     def execute(self, config: dict[str, Any], artifact_path: str) -> None:
         """Run this component synchronously for a workflow coordinator."""
+        self.control_container_manager.prepare(config, artifact_path)
         self._run_node_init(config, artifact_path)
 
     def _run_node_init(self, config: dict[str, Any], artifact_path: str) -> None:
@@ -451,6 +463,7 @@ class LocalRke2Executor(VmExecutor):
         local = config.get("local_rke2", {})
         if local.get("cni", "cilium") != "cilium" or bool(local.get("disable_kube_proxy", False)):
             raise ValueError("Local RKE2 requires cilium with kube-proxy retained")
+        self.control_container_manager.prepare(config, artifact_path)
         self._run_local_rke2(config, artifact_path)
 
     def _run_local_rke2(self, config: dict[str, Any], artifact_path: str) -> None:
@@ -636,6 +649,7 @@ class RancherExecutor(VmExecutor):
         source = str(config.get("_rancher_kubeconfig_source", ""))
         if not source.startswith("/"):
             raise ValueError("A successful Local RKE2 kubeconfig artifact is required before Rancher")
+        self.control_container_manager.prepare(config, artifact_path)
         self._run_rancher(config, artifact_path)
 
     def _run_rancher(self, config: dict[str, Any], artifact_path: str) -> None:
@@ -814,6 +828,7 @@ class DownstreamExecutor(RancherExecutor):
             raise ValueError(
                 "A successful Rancher private-CA certificate artifact is required before downstream"
             )
+        self.control_container_manager.prepare(config, artifact_path)
         self._run_downstream(config, artifact_path)
 
     def _run_downstream(self, config: dict[str, Any], artifact_path: str) -> None:

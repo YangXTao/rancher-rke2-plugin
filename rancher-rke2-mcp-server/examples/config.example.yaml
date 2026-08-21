@@ -12,11 +12,20 @@ execution:
   container:
     strategy: reuse-or-create
     name: rancher-rke2-control
-    image: ubuntu:24.04
+    # Mirror the release image into the same internal Harbor used below.
+    image: registry.example.internal/automation/rancher-rke2-control:0.12.0
+    image_archive: "" # Optional fallback, for example /software/control-container/images/control-0.12.0.tar
+    image_pull_policy: if-not-present
+    allow_offline_registry_pull: true
     network: host
+    restart_policy: unless-stopped
     mounts:
       software: /software
       workspace: /data/rancher/automation
+    docker:
+      version: 20.10.24
+      archive: /software/docker/docker-20.10.24.tgz
+      url: https://rancher.blob.core.chinacloudapi.cn/docker/docker-20.10.24.tgz
 
 node_access:
   username: root

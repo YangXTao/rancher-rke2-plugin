@@ -49,6 +49,11 @@ Terraform, Ansible, SSH, Docker, Helm, kubectl, or legacy skill scripts directly
    the exact component-plan approval text and a stable idempotency key.
 12. Both mutation tools make real infrastructure changes. Never call either without
    the exact user approval text returned by the selected plan.
+   The server automatically prepares the shared persistent control container
+   before the first selected component. Do not ask the user to create that
+   container, install component dependencies on the control host, or copy
+   packaged runners/playbooks into fixed directories. In offline mode the
+   configured immutable image may come from the declared internal Harbor.
 13. Track progress only through available tools such as `get_run` and
    `get_run_events`. A workflow stops on a failed dependency or node-readiness gate;
    never retry it automatically.

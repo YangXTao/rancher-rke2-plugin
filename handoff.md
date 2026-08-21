@@ -1,6 +1,6 @@
 # Rancher / RKE2 MCP 自动化项目交接文档（handoff）
 
-生成时间：2026-08-11（Asia/Shanghai）
+生成时间：2026-08-21（Asia/Shanghai）
 用途：在另一台电脑/新会话中，`git pull` 当前可用版本代码后继续工作。
 
 > 安全说明：本文不含 SSH/vCenter/Harbor/Rancher 密码、MCP Bearer Token 或证书私钥。
@@ -59,9 +59,27 @@ Codex Desktop（插件 rancher-rke2-codex）
 - **插件发布为 git marketplace**：新增 `.agents/plugins/marketplace.json`
   （marketplace 名 `rancher-rke2`），插件源码迁至
   `.agents/plugins/plugins/rancher-rke2-codex/`，当前 cachebuster 版本
-  `0.11.0+codex.20260811055606`。
+  `0.12.0+codex.20260821`。
 - **RHEL 8.10 全流程跑通**（2026-08-11）：RKE2 v1.35.6+rke2r1 + Rancher
   2.14.3-ent + downstream 全部 SUCCEEDED，并渲染新配置手册。
+
+### 2.3 v0.12.0 控制容器生命周期改造
+
+- 新增服务端 `ControlContainerManager`，由五个组件执行器共享。任何单组件或完整
+  workflow 在执行前都会自动准备控制环境，不再隐式依赖 vm 阶段先创建容器。
+- 控制机仅安装配置中固定版本的 Docker 静态二进制；Terraform、Ansible、Helm、
+  kubectl 等仍只存在于控制容器内或 `/software` 持久缓存中。
+- 自动通过 SFTP 下发 manager、runner、playbook 和 Terraform 资产；用户不再需要
+  预先把插件文件复制到控制机固定目录。
+- 控制镜像支持本地 archive，也支持在线拉取；`downloads.mode: offline` 时，仅在
+  `allow_offline_registry_pull: true` 且镜像主机等于配置的 Harbor 主机时允许拉取，
+  不会回退到公网仓库。
+- 按配置校验容器镜像、host 网络、`NET_RAW`、`/software`、工作区、只读
+  `/etc/localtime` 及“不挂载 Docker socket”边界；不兼容容器按 strategy 失败或重建。
+- 每个 run 新增 `control-container/install-docker.log`、`prepare-container.log`、
+  `validate-container.log`。完整 workflow 只准备一次。
+- 新增 `control-image/Dockerfile` 和 tag 触发的 GitHub Actions 发布。运维侧将该镜像
+  按 digest 镜像同步进内网 Harbor 即可，不需要每次运行自行构建。
 
 ## 3. 关键技术决策及原因
 
@@ -77,12 +95,17 @@ Codex Desktop（插件 rancher-rke2-codex）
 | 内核阈值按发行版判断 | 后续会用到不同 OS（RHEL/Rocky/Ubuntu/Kylin），不能一个固定值 |
 | 组件产物复用放宽到组件级 | 全流程中前置阶段成功后置阶段失败时，已成功阶段产物应可复用 |
 | marketplace 发布到 git 仓库 | 新电脑可用 `codex plugin marketplace add` + `plugin add` 正式安装（HTTPS 免 SSH key） |
+| 控制容器由服务端统一管理 | 单组件和完整 workflow 语义一致，消除手工建容器、重复装依赖及 vm 阶段耦合 |
+| 离线模式允许受限 Harbor 拉取 | “离线”表示不能访问公网，不等于不能访问内网镜像仓库；镜像主机必须与 registry.hostname 一致 |
 
 ## 4. 已修改的文件
 
 本会话涉及的主要文件（均在 `rancher-rke2-mcp-server/` 下，除非注明）：
 
-- `src/rancher_rke2_mcp/constants.py`：版本常量（当前 0.11.16）
+- `src/rancher_rke2_mcp/constants.py`：版本常量（当前 0.12.0）
+- `src/rancher_rke2_mcp/control_container.py`：控制机 Docker 与持久控制容器统一管理
+- `src/rancher_rke2_mcp/assets/control-container/`：三阶段准备、校验与独立日志脚本
+- `control-image/`：预构建控制镜像定义与 Harbor 镜像同步说明
 - `src/rancher_rke2_mcp/diagnostics.py`：只读运行时诊断采集、日志活性判定与固定命令白名单
 - `src/rancher_rke2_mcp/runbook.py`：纯人工 15 章手册渲染 + 内置审计
 - `src/rancher_rke2_mcp/storage.py`：`latest_succeeded_component_run` 组件级复用
@@ -101,7 +124,7 @@ Codex Desktop（插件 rancher-rke2-codex）
 ```bash
 cd ~/rancher-rke2-mcp-server/rancher-rke2-plugin
 git fetch origin --tags
-git switch --detach v0.11.16
+git switch --detach v0.12.0
 cd rancher-rke2-mcp-server
 export DOCKER_API_VERSION=1.41
 docker-compose stop rancher-rke2-mcp rancher-rke2-mcp-proxy
@@ -121,15 +144,15 @@ get_capabilities → validate_config → build_plan → get_plan
 ### 5.3 发布流程（本机）
 ```bash
 git -C <repo> add ... && git -C <repo> commit -m "..."
-git -C <repo> tag v0.11.<N>
-git -C <repo> push origin dev/rancher-rke2-automation
-git -C <repo> push origin v0.11.<N>
+git -C <repo> tag -a v0.12.0 -m "Release v0.12.0"
+git -C <repo> push origin refs/tags/v0.12.0
 ```
-版本发布前必须同步 `constants.py` 的 SCHEMA/CONTRACT/SERVER_VERSION。
+本次发布只推 tag，不推送或合并 `dev/rancher-rke2-automation`。版本发布前必须同步
+`constants.py` 的 SCHEMA/CONTRACT/SERVER_VERSION。
 
 ### 5.4 插件安装（新电脑）
 ```powershell
-codex plugin marketplace add https://github.com/YangXTao/rancher-rke2-plugin.git --ref dev/rancher-rke2-automation
+codex plugin marketplace add https://github.com/YangXTao/rancher-rke2-plugin.git --ref v0.12.0
 codex plugin add rancher-rke2-codex@rancher-rke2
 ```
 （SSH 地址 `git@github.com:...` 亦可，但需要 GitHub key；HTTPS 走 Git 凭据。）
@@ -137,10 +160,9 @@ codex plugin add rancher-rke2-codex@rancher-rke2
 ## 6. 当前代码和环境状态
 
 ### 6.1 代码
-- 分支：`dev/rancher-rke2-automation`（唯一 dev 分支；不推 main）
-- 最新发布 tag：`v0.11.16`（MCP Server 版本常量 0.11.16）
-- 测试：51/51 通过（仓库内忽略的 `rancher-rke2-mcp-server/.venv`）
-- 工作区当前无未提交改动
+- 本地发布分支：`release/v0.12.0`（不推送、不合并 dev）
+- 发布基线：`v0.11.16`；目标 tag：`v0.12.0`（MCP Server 版本常量 0.12.0）
+- 自动化测试：53/53 通过（仓库内忽略的 `rancher-rke2-mcp-server/.venv`）
 
 ### 6.2 基础设施（2026-08-11 验证成功）
 - 模板：`Redhat8.10-cgroupv2_Teamplate-abc@123`（RHEL 8.10 / cgroup v2）
@@ -208,7 +230,7 @@ codex plugin add rancher-rke2-codex@rancher-rke2
 - 插件示例：`.agents/plugins/plugins/rancher-rke2-codex/assets/config.example.yaml`
 
 ### 10.5 快速恢复动作
-1. `git pull`（或 clone）到目标机器，切 `dev/rancher-rke2-automation`。
-2. 确认服务器 `get_capabilities` 返回 v0.11.16，并包含 `collect_diagnostics`。
+1. `git fetch origin --tags`（或 clone）到目标机器，切到 detached `v0.12.0`。
+2. 确认服务器 `get_capabilities` 返回 v0.12.0，并包含 `collect_diagnostics`。
 3. 需要执行时：validate → build_plan → preflight → 用户发批准文本 → start_workflow。
 4. 需要手册时：build_plan 全流程 → render_runbook → 同步 outputs。

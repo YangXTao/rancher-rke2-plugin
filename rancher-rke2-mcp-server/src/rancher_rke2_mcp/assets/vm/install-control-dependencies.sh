@@ -65,7 +65,12 @@ if ! command -v apt-get >/dev/null 2>&1; then
   echo "UNSUPPORTED_CONTROL_CONTAINER" >&2
   exit 6
 fi
-install_apt_dependencies
+for required_command in curl unzip python3 ping; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    install_apt_dependencies
+    break
+  fi
+done
 
 if ! command -v terraform >/dev/null 2>&1 || ! terraform version | grep -Fq "v${terraform_version}"; then
   mkdir -p /software/terraform

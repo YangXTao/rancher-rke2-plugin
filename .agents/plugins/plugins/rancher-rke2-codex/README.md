@@ -1,5 +1,13 @@
 # Rancher RKE2 Codex Plugin
 
+## Server contract 0.12.0 managed control container
+
+Every mutation run now bootstraps and validates the persistent control container
+through the server before its selected component starts. A standalone component
+does not require the VM stage to have run first. The configured release image can
+be mirrored to and pulled from internal Harbor in offline mode; the control host
+itself remains free of Terraform, Ansible, Helm, and kubectl installations.
+
 ## Server contract 0.11.16 runtime diagnostics
 
 The diagnostics skill can now call the implemented read-only
@@ -138,7 +146,7 @@ Server完成规划、未来执行、状态跟踪、诊断和审计。
 
 ## 接入
 
-1. 部署 `rancher-rke2-mcp-server` 0.11.16。
+1. 部署 `rancher-rke2-mcp-server` 0.12.0。
 2. 用受Windows信任的证书启用HTTPS。
 3. 确认 `.mcp.json` 地址与证书SAN一致。
 4. 在Codex客户端设置 `RANCHER_RKE2_MCP_TOKEN`。

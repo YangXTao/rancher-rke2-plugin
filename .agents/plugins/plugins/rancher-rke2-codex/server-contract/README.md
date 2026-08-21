@@ -1,8 +1,8 @@
-# Rancher/RKE2 MCP Server Contract 0.11.16
+# Rancher/RKE2 MCP Server Contract 0.12.0
 
 ## Implemented execution boundary
 
-Server 0.11.16 provides `preflight_plan`, `get_preflight`, `start_run`,
+Server 0.12.0 provides `preflight_plan`, `get_preflight`, `start_run`,
 `start_workflow`, `get_run`, `get_run_events`, and `collect_diagnostics`.
 Runtime diagnostics authenticate to the declared control host but execute only
 fixed read-only evidence commands; returned log tails and process metadata are
@@ -66,7 +66,7 @@ Skill只决定调用顺序和用户解释，不得绕过MCP Server直接执行�
 
 ## 当前实现边界
 
-Server 0.11.16已实现：
+Server 0.12.0 已实现：
 
 ```text
 get_capabilities

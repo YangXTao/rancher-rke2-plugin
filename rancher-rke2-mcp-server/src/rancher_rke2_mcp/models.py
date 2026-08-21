@@ -43,12 +43,31 @@ class ControlHost(ExtensibleModel):
     )
 
 
+class ContainerMountsConfig(ExtensibleModel):
+    software: str = "/software"
+    workspace: str = "/data/rancher/automation"
+
+
+class ControlDockerConfig(ExtensibleModel):
+    version: str = Field(default="20.10.24", pattern=r"^[0-9][0-9A-Za-z._+-]*$")
+    archive: str = "/software/docker/docker-20.10.24.tgz"
+    url: str = (
+        "https://rancher.blob.core.chinacloudapi.cn/docker/"
+        "docker-20.10.24.tgz"
+    )
+
+
 class ContainerConfig(ExtensibleModel):
     strategy: Literal["reuse-or-create", "reuse", "create"] = "reuse-or-create"
     name: str = "rancher-rke2-control"
     image: str = "ubuntu:24.04"
-    network: str = "host"
-    mounts: dict[str, Any] = Field(default_factory=dict)
+    image_archive: str = ""
+    image_pull_policy: Literal["if-not-present", "always", "never"] = "if-not-present"
+    allow_offline_registry_pull: bool = True
+    network: Literal["host"] = "host"
+    restart_policy: Literal["unless-stopped"] = "unless-stopped"
+    mounts: ContainerMountsConfig = Field(default_factory=ContainerMountsConfig)
+    docker: ControlDockerConfig = Field(default_factory=ControlDockerConfig)
 
 
 class ExecutionConfig(ExtensibleModel):
@@ -245,6 +264,22 @@ class AutomationConfig(ExtensibleModel):
                 "downstream registration order must be "
                 + ", ".join(expected_order)
             )
+        container = self.execution.container
+        if self.execution.control_host.username != "root":
+            errors.append(
+                "execution.control_host.username must be root to manage the pinned static Docker runtime"
+            )
+        if container.mounts.software != self.downloads.software_root:
+            errors.append(
+                "execution.container.mounts.software must equal downloads.software_root"
+            )
+        if container.mounts.workspace != self.run.workspace:
+            errors.append(
+                "execution.container.mounts.workspace must equal run.workspace"
+            )
+        docker_socket = "/var/run/docker.sock"
+        if docker_socket in container.model_dump_json():
+            errors.append("the host Docker socket must not be mounted into the control container")
         if errors:
             raise ValueError("; ".join(errors))
         return self

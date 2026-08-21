@@ -2,7 +2,7 @@ services:
   rancher-rke2-mcp:
     build:
       context: .
-    image: rancher-rke2-mcp-server:0.8.4
+    image: rancher-rke2-mcp-server:0.12.0
     restart: unless-stopped
     environment:
       RANCHER_RKE2_MCP_HOST: "${RANCHER_RKE2_MCP_HOST:-0.0.0.0}"

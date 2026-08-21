@@ -1,6 +1,6 @@
 # Rancher/RKE2 MCP Automation
 
-This repository contains the 0.11.16 release for a remote, TLS-protected
+This repository contains the 0.12.0 release for a remote, TLS-protected
 Rancher/RKE2 planning, preflight, and approval-gated run-state service and its Codex Plugin.
 
 ## Contents
@@ -20,7 +20,7 @@ never commit secret values.
 
 ## Baseline behavior
 
-Version 0.11.16 exposes planning, preflight, approval-gated execution, run-state,
+Version 0.12.0 exposes planning, preflight, approval-gated execution, run-state,
 runbook, and read-only diagnostic tools:
 `get_capabilities`, `get_config_schema`, `validate_config`, `build_plan`,
 `get_plan`, `preflight_plan`, `get_preflight`, `render_runbook`, `start_run`,
@@ -33,3 +33,11 @@ TCP checks remain required.
 `start_run` and `start_workflow` require exact approval text and a matching passed
 preflight. `collect_diagnostics` authenticates to the declared control host but
 runs only fixed read-only evidence commands and redacts returned text.
+
+Every component now invokes a shared `ControlContainerManager` before execution.
+It installs the pinned static Docker distribution on the SSH control host when
+needed, pulls or imports the configured immutable control image, creates or
+validates the persistent container, and records phase logs below the run's
+`control-container/` artifact directory. Offline mode may pull only from the
+configured internal registry when explicitly enabled; it never falls back to a
+public registry. Component bundles continue to be uploaded automatically.

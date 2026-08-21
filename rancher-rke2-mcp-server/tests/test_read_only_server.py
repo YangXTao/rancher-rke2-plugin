@@ -16,6 +16,7 @@ from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
 from rancher_rke2_mcp.constants import MUTATION_TOOLS, READ_ONLY_TOOLS
+from rancher_rke2_mcp.control_container import ControlContainerManager
 from rancher_rke2_mcp.diagnostics import build_findings
 from rancher_rke2_mcp.executor import (
     DownstreamExecutor,
@@ -950,6 +951,35 @@ def test_validate_config_returns_effective_config_with_defaults_expanded(
     serialized = json.dumps(effective, ensure_ascii=False)
     assert "docker-secret://registry_password" in serialized
     assert '"password":' not in serialized
+
+
+def test_control_container_defaults_are_expanded_and_mounts_are_consistent(
+    tmp_path: Path,
+) -> None:
+    result = make_service(tmp_path).validate_config(EXAMPLE)
+    assert result["ok"] is True
+    container = result["data"]["effective_config"]["execution"]["container"]
+    assert container["image_pull_policy"] == "if-not-present"
+    assert container["allow_offline_registry_pull"] is True
+    assert container["docker"]["version"] == "20.10.24"
+    assert container["mounts"] == {
+        "software": "/software",
+        "workspace": "/data/rancher/automation",
+    }
+
+
+def test_control_container_manager_prepares_only_once_per_run(tmp_path: Path) -> None:
+    manager = ControlContainerManager(
+        secret_root=str(tmp_path),
+        known_hosts_path=str(tmp_path / "known_hosts"),
+        assets_root=tmp_path,
+    )
+    config: dict[str, object] = {}
+    with patch.object(manager, "_prepare_remote") as prepare_remote:
+        manager.prepare(config, "/data/rancher/automation/runs/run-1/vm")
+        manager.prepare(config, "/data/rancher/automation/runs/run-1/node-init")
+        manager.prepare(config, "/data/rancher/automation/runs/run-2/local-rke2")
+    assert prepare_remote.call_count == 2
 
 
 def test_executor_start_persists_running_state(tmp_path: Path) -> None:

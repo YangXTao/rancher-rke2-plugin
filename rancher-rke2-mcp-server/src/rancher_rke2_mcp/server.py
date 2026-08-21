@@ -10,6 +10,7 @@ import uvicorn
 
 from .auth import StaticBearerAuthMiddleware
 from .constants import SERVER_VERSION
+from .control_container import ControlContainerManager
 from .diagnostics import DiagnosticsCollector
 from .executor import (
     DownstreamExecutor,
@@ -54,29 +55,23 @@ def create_server(
         "RANCHER_RKE2_CONTROL_KNOWN_HOSTS",
         "/run/secrets/control_host_known_hosts",
     )
+    control_container_manager = ControlContainerManager(
+        secret_root=selected_secret_root,
+        known_hosts_path=selected_known_hosts,
+    )
+    executor_kwargs = {
+        "secret_root": selected_secret_root,
+        "known_hosts_path": selected_known_hosts,
+        "control_container_manager": control_container_manager,
+    }
     service = ReadOnlyPlanningService(
         SQLiteStore(store_path),
         secret_root=selected_secret_root,
-        executor=VmExecutor(
-            secret_root=selected_secret_root,
-            known_hosts_path=selected_known_hosts,
-        ),
-        node_executor=NodeInitExecutor(
-            secret_root=selected_secret_root,
-            known_hosts_path=selected_known_hosts,
-        ),
-        local_executor=LocalRke2Executor(
-            secret_root=selected_secret_root,
-            known_hosts_path=selected_known_hosts,
-        ),
-        rancher_executor=RancherExecutor(
-            secret_root=selected_secret_root,
-            known_hosts_path=selected_known_hosts,
-        ),
-        downstream_executor=DownstreamExecutor(
-            secret_root=selected_secret_root,
-            known_hosts_path=selected_known_hosts,
-        ),
+        executor=VmExecutor(**executor_kwargs),
+        node_executor=NodeInitExecutor(**executor_kwargs),
+        local_executor=LocalRke2Executor(**executor_kwargs),
+        rancher_executor=RancherExecutor(**executor_kwargs),
+        downstream_executor=DownstreamExecutor(**executor_kwargs),
         diagnostics_collector=DiagnosticsCollector(
             secret_root=selected_secret_root,
             known_hosts_path=selected_known_hosts,
@@ -95,7 +90,8 @@ def create_server(
             "component reuses the newest successful Rancher private-CA certificate artifact for the "
             "same configuration, then creates rancher2_cluster_v2 and registers every custom node "
             "in the approved role order. Both mutation paths use strict known-host SSH verification "
-            "and the declared control container."
+            "and automatically bootstrap and validate the declared persistent control container "
+            "before the first selected component."
             " collect_diagnostics authenticates to the same control host but runs only "
             "fixed read-only evidence commands and redacts returned text."
         ),

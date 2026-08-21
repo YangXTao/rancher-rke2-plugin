@@ -1,4 +1,21 @@
-# Rancher/RKE2 MCP Server 0.11.16
+# Rancher/RKE2 MCP Server 0.12.0
+
+## 0.12.0 managed control container
+
+All five component executors share a `ControlContainerManager`. Before a single
+component or full workflow runs, it automatically installs the configured exact
+static Docker archive on the control host if required, prepares the immutable
+control image, creates or validates the persistent host-network container, and
+verifies `/software` plus the automation workspace bind mounts. The Docker
+socket is never mounted.
+
+The manager runs once per workflow and also makes every single-component run
+self-contained; VM is no longer a hidden bootstrap prerequisite. It writes
+`install-docker.log`, `prepare-container.log`, and `validate-container.log`
+under `<run>/control-container/`. In offline mode an image archive remains
+supported, and an explicitly enabled pull is restricted to the configured
+internal Harbor hostname. Release tags publish a prebuilt control image through
+GitHub Actions so operators mirror/pull it instead of rebuilding it per run.
 
 ## 0.11.16 read-only runtime diagnostics
 
